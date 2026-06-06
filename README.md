@@ -13,7 +13,7 @@ GTK dashboard for an AirGradient local-server device (`/measures/current`) built
 
 - Rust toolchain (stable)
 - GTK 4 development files
-- Libadwaita 1 development files
+- Libadwaita 1.4 or newer development files
 - `pkg-config`
 
 Debian/Ubuntu example:

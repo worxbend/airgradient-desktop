@@ -2,11 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use adw::{self, prelude::*, ActionRow, HeaderBar, PreferencesGroup, PreferencesPage, StatusPage};
+use adw::{
+    self, prelude::*, ActionRow, ComboRow, EntryRow, HeaderBar, PreferencesGroup, PreferencesPage,
+    SpinRow, StatusPage,
+};
 use gio;
 use gtk4::{
-    Align, Box as GtkBox, Button, ComboBoxText, Entry, Label, Orientation, SpinButton, Stack,
-    StackTransitionType,
+    Align, Box as GtkBox, Button, Image, Label, Orientation, Stack, StackTransitionType, StringList,
 };
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -315,24 +317,19 @@ fn build_settings_page(
         .icon_name("preferences-system-symbolic")
         .build();
 
-    let theme_selector = ComboBoxText::new();
-    theme_selector.append_text("System");
-    theme_selector.append_text("Light");
-    theme_selector.append_text("Dark");
-    {
-        let current_mode = state.borrow().theme_mode;
-        theme_selector.set_active(Some(match current_mode {
-            ThemeMode::System => 0,
-            ThemeMode::Light => 1,
-            ThemeMode::Dark => 2,
-        }));
-    }
-
-    theme_selector.connect_changed({
+    let theme_options = StringList::new(&["System", "Light", "Dark"]);
+    let current_mode = state.borrow().theme_mode;
+    let theme_row = ComboRow::builder()
+        .title("Style")
+        .subtitle("Use the system preference or force a light or dark appearance")
+        .model(&theme_options)
+        .selected(theme_mode_index(current_mode))
+        .build();
+    theme_row.connect_selected_notify({
         let style_manager = adw::StyleManager::default();
         let state = state.clone();
-        move |selector| {
-            let theme_mode = match selector.active().unwrap_or(0) {
+        move |row| {
+            let theme_mode = match row.selected() {
                 1 => ThemeMode::Light,
                 2 => ThemeMode::Dark,
                 _ => ThemeMode::System,
@@ -345,85 +342,61 @@ fn build_settings_page(
         }
     });
 
-    let theme_row = ActionRow::builder()
-        .title("Style")
-        .subtitle("Use the system preference or force a light or dark appearance")
-        .activatable_widget(&theme_selector)
-        .build();
-    theme_row.add_suffix(&theme_selector);
-
-    let url_entry = Entry::new();
-    url_entry.set_hexpand(true);
-    url_entry.set_placeholder_text(Some("http://192.168.1.201"));
-    if let Some(url) = state.borrow().server_url() {
-        url_entry.set_text(url);
-    }
-    let url_row = ActionRow::builder()
+    let url_row = EntryRow::builder()
         .title("Local-server Base URL")
-        .subtitle("For example, http://192.168.1.201")
-        .activatable_widget(&url_entry)
+        .text(state.borrow().server_url().unwrap_or_default())
         .build();
-    url_row.add_suffix(&url_entry);
+    let url_icon = Image::from_icon_name("network-wired-symbolic");
+    url_row.add_prefix(&url_icon);
 
-    let refresh_interval_input =
-        SpinButton::with_range(MIN_REFRESH_INTERVAL_SECS as f64, 3600.0, 1.0);
-    refresh_interval_input.set_value(state.borrow().refresh_interval_secs as f64);
-    refresh_interval_input.set_numeric(true);
-    refresh_interval_input.set_width_chars(5);
-    let refresh_row = ActionRow::builder()
-        .title("Refresh Interval")
-        .subtitle("Seconds between automatic measurement updates")
-        .activatable_widget(&refresh_interval_input)
-        .build();
-    refresh_row.add_suffix(&refresh_interval_input);
-    refresh_interval_input.set_tooltip_text(Some(
+    let refresh_row = SpinRow::with_range(MIN_REFRESH_INTERVAL_SECS as f64, 3600.0, 1.0);
+    refresh_row.set_title("Refresh Interval");
+    refresh_row.set_subtitle("Seconds between automatic measurement updates");
+    refresh_row.set_value(state.borrow().refresh_interval_secs as f64);
+    refresh_row.set_numeric(true);
+    refresh_row.set_tooltip_text(Some(
         "Refresh interval in seconds. Minimum value is 5 seconds.",
     ));
 
-    let save_status = Label::builder()
-        .label("Enter a URL like http://192.168.1.201")
-        .halign(Align::Start)
+    let status_row = ActionRow::builder()
+        .title("Status")
+        .subtitle("Enter a URL like http://192.168.1.201")
         .build();
-    save_status.set_max_width_chars(90);
 
-    let save_button = Button::builder().label("Save Settings").build();
-    save_button.add_css_class("suggested-action");
     let save_row = ActionRow::builder()
-        .title("Apply Settings")
+        .title("Save Settings")
         .subtitle("Save the server URL and restart the refresh timer")
-        .activatable_widget(&save_button)
+        .activatable(true)
         .build();
-    save_row.add_suffix(&save_button);
+    save_row.add_suffix(&Image::from_icon_name("document-save-symbolic"));
 
-    save_button.connect_clicked({
+    save_row.connect_activated({
         let state = state.clone();
-        let url_entry = url_entry.clone();
-        let refresh_interval_input = refresh_interval_input.clone();
+        let url_row = url_row.clone();
+        let refresh_row = refresh_row.clone();
         let dashboard_widgets = dashboard_widgets.clone();
         let stack = stack.clone();
         let auto_refresh_source = auto_refresh_source.clone();
         let last_updated = last_updated.clone();
-        let save_status = save_status.clone();
+        let status_row = status_row.clone();
 
         move |_| {
-            let normalized = match parse_server_url(&url_entry.text()) {
+            let normalized = match parse_server_url(&url_row.text()) {
                 Ok(url) => url,
                 Err(err) => {
-                    save_status.set_text(&format!("Invalid URL: {err}"));
+                    status_row.set_subtitle(&format!("Invalid URL: {err}"));
                     return;
                 }
             };
 
-            let raw_interval = refresh_interval_input
-                .value_as_int()
-                .max(MIN_REFRESH_INTERVAL_SECS as i32) as u64;
+            let raw_interval = (refresh_row.value().round() as u64).max(MIN_REFRESH_INTERVAL_SECS);
             let config = AppConfig {
                 server_url: normalized,
                 refresh_interval_secs: raw_interval,
             };
 
             if let Err(err) = config::write_config(&config) {
-                save_status.set_text(&format!("Failed to save: {err}"));
+                status_row.set_subtitle(&format!("Failed to save: {err}"));
                 return;
             }
 
@@ -440,7 +413,7 @@ fn build_settings_page(
                     "Server URL: {}",
                     config.server_url.unwrap_or_default()
                 ));
-                save_status.set_text("Saved. Refreshing dashboard.");
+                status_row.set_subtitle("Saved. Refreshing dashboard.");
             } else {
                 stack.set_visible_child_name(Page::Welcome.id());
                 dashboard_widgets
@@ -449,7 +422,7 @@ fn build_settings_page(
                 dashboard_widgets
                     .fetch_status_label
                     .set_text("Server URL removed.");
-                save_status.set_text("Cleared URL. Returning to Welcome.");
+                status_row.set_subtitle("Cleared URL. Returning to Welcome.");
             }
 
             start_auto_refresh_timer(
@@ -490,7 +463,7 @@ fn build_settings_page(
     server_group.add(&save_row);
 
     let status_group = PreferencesGroup::new();
-    status_group.add(&save_status);
+    status_group.add(&status_row);
 
     page.add(&appearance_group);
     page.add(&server_group);
@@ -754,6 +727,14 @@ fn apply_color_scheme(style_manager: &adw::StyleManager, theme_mode: ThemeMode) 
         ThemeMode::Dark => adw::ColorScheme::ForceDark,
     };
     style_manager.set_color_scheme(scheme);
+}
+
+fn theme_mode_index(theme_mode: ThemeMode) -> u32 {
+    match theme_mode {
+        ThemeMode::System => 0,
+        ThemeMode::Light => 1,
+        ThemeMode::Dark => 2,
+    }
 }
 
 fn update_dark_shell_class(root: &GtkBox, is_dark: bool) {
