@@ -1,3 +1,9 @@
+//! Reusable metric card for pollutant sensors.
+//!
+//! `SensorCard` is used for CO2, TVOC, NOx, and particulate matter. It wraps a
+//! small GTK widget tree and exposes methods such as `refresh()` so the
+//! dashboard can update values without knowing the card's internal labels.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,6 +26,7 @@ pub struct SensorCard {
 }
 
 impl SensorCard {
+    /// Build a card with an icon, title, value, unit, status dot, and trend.
     pub fn new(name: &str, unit: &str, icon_name: &str) -> Self {
         let root = GtkBox::new(Orientation::Horizontal, 16);
         root.set_halign(Align::Fill);
@@ -52,6 +59,9 @@ impl SensorCard {
         status_dot.add_css_class("status-dot");
         let status_color = Rc::new(RefCell::new(gdk::RGBA::new(0.73, 0.73, 0.73, 1.0)));
         let color = status_color.clone();
+        // DrawingArea lets the card draw a tiny status dot using the exact
+        // current threshold color. The color is stored in `Rc<RefCell<_>>`
+        // because GTK calls this draw function later, after `new()` returns.
         status_dot.set_draw_func(move |widget, cr, width, height| {
             let color = color.borrow();
             cr.set_source_rgba(
@@ -121,9 +131,12 @@ impl SensorCard {
     }
 
     pub fn widget(&self) -> GtkBox {
+        // Cloning a GTK widget is cheap: it clones a reference to the same
+        // underlying GObject, not a duplicate UI subtree.
         self.root.clone()
     }
 
+    /// Make the card small enough for the PM row.
     pub fn set_compact(&self) {
         self.root.add_css_class("compact-sensor-card");
         self.root.set_spacing(8);
@@ -131,6 +144,8 @@ impl SensorCard {
         self.trend_context_label.set_visible(false);
     }
 
+    /// Make the card small enough for the gas row while keeping more visual
+    /// weight than the PM cards.
     pub fn set_narrow(&self) {
         self.root.add_css_class("narrow-sensor-card");
         self.root.set_spacing(10);
@@ -174,6 +189,8 @@ impl SensorCard {
         classes
             .iter()
             .for_each(|css_class| self.root.remove_css_class(css_class));
+        // The CSS class controls the card accent/gradient. The DrawingArea dot
+        // uses the exact same semantic color.
         self.root.add_css_class(class);
 
         *self.status_color.borrow_mut() = color;
@@ -194,6 +211,8 @@ pub fn update_trend_labels(
     unit: &str,
     lower_is_better: bool,
 ) {
+    // Remove old trend classes first. GTK CSS classes are additive, so leaving
+    // an old class would make the final color depend on selector order.
     for class in TREND_CLASSES {
         trend_label.remove_css_class(class);
     }
@@ -272,6 +291,8 @@ fn status_class(color: gdk::RGBA) -> &'static str {
 
     let (r, g, b) = (color.red(), color.green(), color.blue());
     let mut best = ("status-unknown", f64::MAX);
+    // Threshold helpers return concrete RGBA values. CSS needs class names, so
+    // choose the closest known palette color.
     for (name, (cr, cg, cb)) in candidates {
         let distance = ((f64::from(r) - f64::from(cr)).powi(2)
             + (f64::from(g) - f64::from(cg)).powi(2)

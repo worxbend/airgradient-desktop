@@ -1,3 +1,8 @@
+//! Dashboard page and measurement application.
+//!
+//! This module builds the dashboard layout and owns the widget handles needed to
+//! refresh values after each successful HTTP fetch.
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -40,10 +45,16 @@ pub struct DashboardPageWidgets {
     pub pm1_card: SensorCard,
     pub pm25_card: SensorCard,
     pub pm10_card: SensorCard,
+    /// Last few measurements kept only in memory for trend calculations.
     history: Rc<RefCell<VecDeque<AirMeasureSnapshot>>>,
 }
 
 impl DashboardPageWidgets {
+    /// Apply a parsed measurement snapshot to every dashboard widget.
+    ///
+    /// The dashboard compares the new snapshot with the previous one to show
+    /// trend labels. GTK widgets are reference-counted objects, so this struct
+    /// can be cloned into callbacks and still update the same visible widgets.
     pub fn apply_measurements(&self, snapshot: &AirMeasureSnapshot) {
         let previous = self.history.borrow().back().cloned();
 
@@ -149,6 +160,9 @@ impl DashboardPageWidgets {
         {
             let mut history = self.history.borrow_mut();
             history.push_back(snapshot.clone());
+            // Keep a tiny rolling history. Today we need only the previous
+            // value, but keeping five samples leaves room for "vs 5 min ago"
+            // style labels later without changing this storage shape.
             while history.len() > 5 {
                 history.pop_front();
             }
@@ -167,6 +181,8 @@ pub fn build_dashboard_page() -> (GtkBox, DashboardPageWidgets) {
         .hscrollbar_policy(gtk4::PolicyType::Never)
         .vexpand(true)
         .build();
+    // `Clamp` is a libadwaita layout helper. It keeps content readable on wide
+    // screens instead of stretching cards across the entire window.
     let clamp = Clamp::builder()
         .maximum_size(960)
         .tightening_threshold(600)
@@ -210,6 +226,7 @@ pub fn build_dashboard_page() -> (GtkBox, DashboardPageWidgets) {
     let tvoc_card = SensorCard::new("TVOC", "ppb", "airgradient-voc-symbolic");
     let nox_card = SensorCard::new("NOx", "ppb", "airgradient-nox-symbolic");
     for card in [&co2_card, &tvoc_card, &nox_card] {
+        // Gas cards should fit three across on the second dashboard row.
         card.set_narrow();
     }
     let gas_row = build_card_flow(
@@ -224,6 +241,8 @@ pub fn build_dashboard_page() -> (GtkBox, DashboardPageWidgets) {
     let pm003_count_card =
         SensorCard::new("PM₀.₃ Count", "count", "airgradient-particles-symbolic");
     for card in [&pm003_count_card, &pm1_card, &pm25_card, &pm10_card] {
+        // PM cards use the most compact variant so all particle metrics fit on
+        // one row at the default window width.
         card.set_compact();
     }
     let particles_row = build_card_flow(
@@ -266,6 +285,8 @@ pub fn build_dashboard_page() -> (GtkBox, DashboardPageWidgets) {
 }
 
 fn build_card_flow(cards: &[GtkBox], max_per_line: u32) -> FlowBox {
+    // FlowBox gives us a responsive grid-like row without manually calculating
+    // columns. At narrow widths it can wrap cards instead of overflowing.
     let flow = FlowBox::builder()
         .row_spacing(12)
         .column_spacing(12)

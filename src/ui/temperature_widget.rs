@@ -1,3 +1,8 @@
+//! Temperature dashboard widget.
+//!
+//! This is a custom card because temperature includes comfort text and trend
+//! information rather than just a value/unit pair.
+
 use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Image, Label, Orientation};
@@ -97,6 +102,8 @@ impl TemperatureWidget {
         match value {
             Some(value) => {
                 self.value_label.set_text(&format!("{value:.0}°C"));
+                // These comfort ranges are intentionally simple UI labels, not
+                // medical or HVAC recommendations.
                 let comfort = if value < 18.0 {
                     "Cool"
                 } else if value <= 26.0 {
@@ -125,6 +132,9 @@ impl TemperatureWidget {
     }
 
     pub fn update_status(&self, _color: gdk::RGBA) {
+        // Kept as a separate method so the widget has the same public shape as
+        // other dashboard cards. Future temperature status coloring can live
+        // here without changing callers.
         self.icon.set_pixel_size(40);
     }
 

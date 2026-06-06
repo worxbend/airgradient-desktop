@@ -1,3 +1,12 @@
+/*
+ * Dashboard styling.
+ *
+ * Libadwaita provides the base application theme. This file styles only the
+ * custom dashboard cards and a small amount of app shell chrome. Colors are
+ * from the GNOME palette where possible.
+ */
+
+/* Keep the manually composed header visually flat against the app shell. */
 .flat-header {
   background: @window_bg_color;
   border-bottom-style: none;
@@ -5,10 +14,12 @@
   box-shadow: none;
 }
 
+/* The app shell is the root widget created in `ui/app.rs`. */
 .app-shell {
   background: @window_bg_color;
 }
 
+/* Dark mode gets a slightly deeper background than libadwaita's default. */
 .app-shell.dark-app-shell {
   background: #17151f;
 }
@@ -25,6 +36,7 @@
   background: transparent;
 }
 
+/* Shared card geometry. Individual rows can override minimum sizes below. */
 .sensor-card,
 .metric-card,
 .aqi-card {
@@ -43,6 +55,7 @@
   min-width: 220px;
 }
 
+/* AQI is the primary signal and intentionally has the largest visual weight. */
 .aqi-card {
   min-height: 190px;
   min-width: 300px;
@@ -58,6 +71,7 @@
   min-height: 184px;
 }
 
+/* Width variants used by dashboard.rs to keep row layouts compact. */
 .compact-sensor-card {
   min-width: 96px;
   padding: 10px;
@@ -68,6 +82,7 @@
   padding: 12px;
 }
 
+/* Symbolic icons inherit `color`; GTK recolors SVGs with currentColor. */
 .metric-icon,
 .aqi-icon {
   border-radius: 999px;
@@ -92,6 +107,7 @@
   min-height: 84px;
 }
 
+/* Explicit text colors keep light-theme cards readable on pale gradients. */
 .dashboard-page .sensor-card label,
 .dashboard-page .metric-card label,
 .dashboard-page .aqi-card label {
@@ -156,11 +172,43 @@
   font-size: 12px;
 }
 
+/* In dark mode the same widgets sit on darker card surfaces, so text needs a
+ * separate brighter palette. These rules are intentionally scoped to the app
+ * shell class toggled from `ui/app.rs`; light mode keeps the dark-gray text
+ * above for contrast on pale cards. */
+.dark-app-shell .sensor-card,
+.dark-app-shell .metric-card,
+.dark-app-shell .aqi-card,
+.dark-app-shell .metric-title,
+.dark-app-shell .aqi-level,
+.dark-app-shell .dashboard-page .sensor-card label,
+.dark-app-shell .dashboard-page .metric-card label,
+.dark-app-shell .dashboard-page .aqi-card label {
+  color: #f6f5f4;
+}
+
+.dark-app-shell .metric-value,
+.dark-app-shell .large-value,
+.dark-app-shell .aqi-value {
+  color: #ffffff;
+}
+
+.dark-app-shell .metric-unit,
+.dark-app-shell .trend-context {
+  color: #deddda;
+}
+
+.dark-app-shell .metric-icon,
+.dark-app-shell .aqi-icon {
+  color: #f6f5f4;
+}
+
 .trend-value {
   font-size: 12px;
   font-weight: 700;
 }
 
+/* Trend colors: lower pollutant/AQI values are improvement, higher are worse. */
 .trend-improved {
   color: #26a269;
 }
@@ -178,6 +226,7 @@
   margin: 0;
 }
 
+/* Soft card gradients. These are intentionally subtle to stay GNOME-like. */
 .temperature-widget {
   background-image: linear-gradient(135deg, rgba(153, 193, 241, 0.20), rgba(53, 132, 228, 0.08));
 }

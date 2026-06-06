@@ -1,3 +1,8 @@
+//! Large Air Quality Index widget.
+//!
+//! AQI is the primary dashboard signal, so it gets a dedicated layout instead
+//! of using the smaller generic `SensorCard`.
+
 use gtk4::{gdk, prelude::*};
 use gtk4::{Align, Box as GtkBox, Image, Label, Orientation};
 
@@ -144,6 +149,8 @@ impl AQIWidget {
         for class in LEVEL_CLASSES {
             self.root.remove_css_class(class);
         }
+        // AQI classes map to CSS gradients and accents. The numeric text stays
+        // dark in light mode so it remains readable on colored cards.
         let level = value.unwrap_or(0.0);
         let cls = if level <= 50.0 {
             "aqi-good"

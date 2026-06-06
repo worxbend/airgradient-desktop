@@ -1,94 +1,153 @@
 # Air Monitor
 
-GTK dashboard for an AirGradient local-server device (`/measures/current`) built with `gtk4-rs` and `libadwaita`.
+Air Monitor is a GTK 4 + libadwaita desktop dashboard for an AirGradient device that exposes the local-server endpoint at `/measures/current`.
 
-## References
+The app is intentionally small and direct: configure the device URL, fetch the current measurement payload, normalize it into a Rust data model, and render the result as a GNOME-style air quality dashboard.
 
-- [gtk-rs documentation](https://gtk-rs.org/)
-- [gtk4-rs book (GUI with Rust and GTK 4)](https://gtk-rs.org/gtk4-rs/git/book/)
-- [gtk-rs-core repository](https://github.com/gtk-rs/gtk-rs-core/)
-- [gtk4-rs repository](https://github.com/gtk-rs/gtk4-rs/)
+## What It Shows
+
+The dashboard displays:
+
+- Air Quality Index (AQI)
+- temperature and humidity
+- CO2, TVOC, and NOx
+- PM0.3 count, PM1.0, PM2.5, and PM10
+- trend indicators based on the previous reading kept in memory
+- the last successful update time
+
+Pressure and historical charts are intentionally not part of the current UI.
+
+## How It Works
+
+At a high level:
+
+1. The user configures a local AirGradient device URL in Settings.
+2. The app stores the URL in the XDG config directory.
+3. The dashboard fetches `{server_url}/measures/current`.
+4. The JSON payload is converted into `AirMeasureSnapshot`.
+5. GTK widgets are refreshed with values, units, colors, and trend deltas.
+
+For a deeper explanation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Requirements
 
-- Rust toolchain (stable)
+- Rust toolchain, stable channel
 - GTK 4 development files
 - Libadwaita 1.4 or newer development files
 - `pkg-config`
+- `glib-compile-resources`, normally installed with GLib development tools
 
 Debian/Ubuntu example:
 
 ```bash
-sudo apt install pkg-config libgtk-4-dev libadwaita-1-dev build-essential
+sudo apt install pkg-config libgtk-4-dev libadwaita-1-dev libglib2.0-dev build-essential
 ```
 
-## Project Setup
-
-Install dependencies and run the app:
+## Run Locally
 
 ```bash
 cargo build
 cargo run
 ```
 
-Run a release build locally:
+Run tests:
+
+```bash
+cargo test
+```
+
+Run a release build:
 
 ```bash
 cargo build --release
 ```
 
-### Development layout
+## Configure A Device
 
-- `src/main.rs` wires modules.
-- `src/app.rs` owns app bootstrap and activation.
-- `src/ui/` contains page modules (`app`, `dashboard`, and reusable widgets).
-- `src/sensors/` parses and normalizes `/measures/current` payloads.
-- `src/state.rs` stores mutable window/page state (`current_page`, action counter).
-- `assets/` contains `.desktop`, icon, and CSS used by the dashboard widgets.
+Open Settings and enter the device base URL. These forms are accepted:
 
-### Dependency compatibility note
+- `http://192.168.1.201/`
+- `http://192.168.1.201`
+- `192.168.1.201`
+- `http://192.168.1.201:80`
 
-`libadwaita` and `gtk4` must come from a compatible pair to avoid a native `links = "gtk-4"` conflict:
+The app normalizes the value before saving it. For example, `192.168.1.201` becomes `http://192.168.1.201`.
 
-- `adw (libadwaita) = "0.7"` pairs with `gtk4 = "0.9"` in this setup.
-- If you bump either crate, bump both together from the same gtk-rs release train.
+Configuration is stored at:
 
-## Project files
+```text
+$XDG_CONFIG_HOME/airgradient-desktop/config.json
+```
 
-- `Cargo.toml` — crate metadata and dependencies for `adw` (libadwaita) and `gtk4`
-- `src/main.rs` — minimal app startup with `adw::Application` and a window
+If `XDG_CONFIG_HOME` is not set, the fallback is:
 
-## Notes
+```text
+$HOME/.config/airgradient-desktop/config.json
+```
 
-If you get native link errors, verify:
+## Project Layout
 
-- `pkg-config` can find GTK 4 and libadwaita
-- Your system provides matching major versions for both libraries
+```text
+src/
+  main.rs                 Program entry point.
+  app.rs                  Creates the libadwaita application.
+  config.rs               Reads/writes user configuration.
+  state.rs                In-memory page, URL, theme, and refresh state.
+  sensors/
+    air_quality.rs        Parses AirGradient JSON into typed values.
+    thresholds.rs         Maps sensor values to GNOME palette colors.
+  ui/
+    app.rs                Main window, navigation, settings, fetching.
+    dashboard.rs          Dashboard layout and measurement application.
+    sensor_card.rs        Reusable pollutant metric card.
+    aqi_widget.rs         Large AQI widget.
+    temperature_widget.rs Temperature widget.
+    humidity_widget.rs    Humidity widget.
+assets/
+  dashboard.css           GTK CSS for the dashboard.
+resources/
+  airgradient.gresource.xml
+  icons/                  Symbolic SVG icons embedded into the binary.
+docs/
+  ARCHITECTURE.md         How data and UI state move through the app.
+  DEVELOPMENT.md          Development workflow and common tasks.
+  LOCAL_SERVER.md         AirGradient payload handling notes.
+```
 
-If you later add `.ui` files or translations, we can extend this base setup with:
+## Important Rust Concepts Used Here
 
-- GTK resource bundling (`glib::MainContext` + build helper)
-- app metadata (`.desktop`, icon assets, AppStream files)
-- structured window/panel modules and signal wiring
+This codebase is a useful GTK/Rust learning project because it uses common Rust patterns in a small app:
 
-### Release packaging
+- `Option<T>` means a sensor value may be missing from the JSON payload.
+- `Result<T, String>` is used when a URL, network request, or JSON parse can fail.
+- `Rc<RefCell<T>>` is used for shared, mutable state on the GTK main thread.
+- `Clone` on GTK widgets is cheap: it clones a reference to the same underlying GObject, not a whole visual tree.
+- GTK signals use closures. Values moved into a signal callback usually need to be cloned first.
+- Blocking HTTP work is moved off the GTK main loop with `gio::spawn_blocking`.
 
-The repository includes a GitHub Actions release pipeline at `.github/workflows/release.yml` that:
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for more detail.
 
-- installs GTK/libadwaita system dependencies,
-- builds `airgradient-desktop` in `--release`,
-- packages the binary and packaging assets,
-- uploads a release archive and attaches it to version tags (`v*`).
+## Theme Support
 
-### Theme support
+- The app defaults to the system theme.
+- Settings can force System, Light, or Dark mode.
+- Dark mode uses a slightly darker app shell background.
+- Dashboard text uses explicit GNOME dark palette colors on cards so it remains readable on light gradient cards.
 
-- App startup uses `ColorScheme::Default`, so GTK/adwaita follows the desktop theme initially.
-- Settings page theme control toggles `System → Light → Dark → System`.
-- `System` uses GTK/adwaita native theme when not overriding.
+## Dependency Compatibility
+
+`libadwaita` and `gtk4` must be from compatible gtk-rs release trains. This project currently uses:
+
+- `adw` (`libadwaita`) `0.7` with feature `v1_4`
+- `gtk4` `0.9`
+
+If you upgrade one, upgrade the related gtk-rs crates together.
+
+The `v1_4` libadwaita feature is enabled because Settings uses native rows such as `AdwEntryRow` and `AdwSpinRow`.
 
 ## Install Notes
 
-After building (or from a release archive), install locally:
+After building a release binary:
 
 ```bash
 sudo install -Dm755 target/release/airgradient-desktop /usr/local/bin/airgradient-desktop
@@ -97,14 +156,9 @@ sudo install -Dm644 assets/com.airgradient.desktop /usr/share/applications/com.a
 sudo update-desktop-database /usr/share/applications
 ```
 
-You can also install a release package from the workflow artifact by extracting the tarball and copying the same paths under `/usr`.
+## References
 
-## Dashboard behavior
-
-- Welcome route is shown until a server URL is configured.
-- Settings validates URLs in forms like:
-  - `http://192.168.1.201/`
-  - `http://192.168.1.201`
-  - `192.168.1.201`
-  - `http://192.168.1.201:80`
-- Auto-refresh interval is configurable in Settings and also manual refresh is available from header icons.
+- [AirGradient local-server documentation](https://github.com/airgradienthq/arduino/blob/master/docs/local-server.md)
+- [gtk-rs documentation](https://gtk-rs.org/)
+- [gtk4-rs book](https://gtk-rs.org/gtk4-rs/git/book/)
+- [GNOME Human Interface Guidelines](https://developer.gnome.org/hig/)

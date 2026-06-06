@@ -1,5 +1,16 @@
+//! AirGradient local-server payload parsing.
+//!
+//! AirGradient devices can expose slightly different field names depending on
+//! hardware model and firmware. The parser accepts several candidate keys for
+//! each measurement and returns a normalized `AirMeasureSnapshot` for the UI.
+
 use serde_json::Value;
 
+/// One parsed measurement response from `/measures/current`.
+///
+/// Every sensor value is optional because not all AirGradient models expose the
+/// same fields. In the UI, `None` is displayed as `--`; it is not treated as
+/// zero because zero can be a valid real measurement.
 #[derive(Debug, Clone, Default)]
 pub struct AirMeasureSnapshot {
     pub temperature: Option<f32>,
@@ -17,6 +28,9 @@ pub struct AirMeasureSnapshot {
 }
 
 pub fn parse_air_measurements(raw: &Value) -> AirMeasureSnapshot {
+    // AirGradient's current firmware exposes `noxIndex`, but accepting common
+    // alternatives keeps the app usable if payload names change or if users test
+    // with compatible local-server implementations.
     let nox = extract_measurement_value(raw, &["nox", "no2", "nox_ppb"])
         .or_else(|| extract_measurement_value(raw, &["noxIndex", "nox_index"]));
     let nox_unit = if nox.is_none() {
@@ -39,6 +53,8 @@ pub fn parse_air_measurements(raw: &Value) -> AirMeasureSnapshot {
     let pm25 = extract_measurement_value(raw, &["pm02", "pm2_5", "pm25", "pm2.5"]);
 
     AirMeasureSnapshot {
+        // Prefer compensated temperature/humidity when available because the
+        // device can apply model-specific correction before exposing values.
         temperature: extract_measurement_value(
             raw,
             &[
@@ -81,6 +97,11 @@ pub fn parse_air_measurements(raw: &Value) -> AirMeasureSnapshot {
     }
 }
 
+/// Return the first numeric value found under any candidate key.
+///
+/// This searches top-level keys first, then recursively searches nested objects
+/// and arrays. That makes the parser tolerant of payloads that wrap sensor
+/// values in a `measurements` object.
 pub fn extract_measurement_value(raw: &Value, candidates: &[&str]) -> Option<f32> {
     candidates.iter().find_map(|name| {
         if let Some(value) = raw.get(*name).and_then(as_f32) {
@@ -148,6 +169,8 @@ fn has_any_key(raw: &Value, candidates: &[&str]) -> bool {
 }
 
 fn pm25_to_us_aqi(pm25: f32) -> f32 {
+    // US AQI linear interpolation breakpoints for PM2.5 concentration. This is
+    // used only when the device does not report an AQI value directly.
     const BREAKPOINTS: [(f32, f32, f32, f32); 6] = [
         (0.0, 12.0, 0.0, 50.0),
         (12.1, 35.4, 51.0, 100.0),

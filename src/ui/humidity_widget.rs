@@ -1,3 +1,8 @@
+//! Humidity dashboard widget.
+//!
+//! This mirrors `TemperatureWidget`: a large value, a comfort label, and a trend
+//! indicator in a compact card.
+
 use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Image, Label, Orientation};
@@ -97,6 +102,7 @@ impl HumidityWidget {
         match value {
             Some(value) => {
                 self.value_label.set_text(&format!("{value:.0}%"));
+                // Human-readable comfort bands for quick scanning.
                 let comfort = if value < 40.0 {
                     "Dry"
                 } else if value <= 60.0 {
@@ -125,6 +131,7 @@ impl HumidityWidget {
     }
 
     pub fn update_status(&self, _color: gdk::RGBA) {
+        // Kept for API symmetry with the other widgets.
         self.icon.set_pixel_size(40);
     }
 

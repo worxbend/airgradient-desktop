@@ -1,3 +1,9 @@
+//! Main GTK window and application UI flow.
+//!
+//! This module owns the visible application shell: header bar, page stack,
+//! settings page, timers, and measurement fetching. It intentionally keeps the
+//! lower-level dashboard widgets in separate modules.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -53,7 +59,11 @@ pub fn build_main_window(
 
     let last_updated_label = Label::new(Some("Last updated: not yet"));
     last_updated_label.set_halign(Align::Start);
+    // `last_updated` is shared between the fetch callback and a once-per-second
+    // timer that turns the timestamp into text such as "17s ago".
     let last_updated = Rc::new(RefCell::new(None::<Instant>));
+    // Store the active auto-refresh source so changing Settings can remove the
+    // old timer before installing a new one.
     let auto_refresh_source = Rc::new(RefCell::new(None));
 
     let (dashboard_page, dashboard_widgets) = build_dashboard_page();
@@ -70,6 +80,8 @@ pub fn build_main_window(
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.add_css_class("app-shell");
     update_dark_shell_class(&root, style_manager.is_dark());
+    // When System theme is selected, libadwaita can change between light and
+    // dark while the app is running. Keep our custom root CSS class in sync.
     style_manager.connect_dark_notify({
         let root = root.clone();
         move |manager| update_dark_shell_class(&root, manager.is_dark())
@@ -85,6 +97,8 @@ pub fn build_main_window(
     window.set_content(Some(&root));
 
     if state.borrow().has_server_url() {
+        // If config already contains a server URL, open directly into useful
+        // data instead of waiting for manual refresh.
         trigger_fetch_current_measures(
             state.clone(),
             dashboard_widgets.clone(),
@@ -162,6 +176,8 @@ fn create_header_bar(
         let last_updated = last_updated.clone();
         let last_updated_label = last_updated_label.clone();
         move |_| {
+            // The home button means "default page". Before setup that is
+            // Welcome; after setup it is Dashboard.
             let target = if state.borrow().has_server_url() {
                 Page::Dashboard
             } else {
@@ -244,6 +260,9 @@ fn create_page_area(
         .transition_type(StackTransitionType::SlideLeftRight)
         .build();
 
+    // `gtk4::Stack` keeps all pages alive and switches visibility by name.
+    // This is simple for an app with a few pages and avoids rebuilding Settings
+    // every time the user navigates.
     let welcome_page = build_welcome_page(stack.clone());
     let settings_page = build_settings_page(
         state.clone(),
@@ -294,6 +313,8 @@ fn switch_to_page(
     }
     let _ = stack.set_visible_child_name(page.id());
 
+    // Navigating back to the dashboard is a useful moment to refresh, because
+    // the user is explicitly asking to see current measurements.
     if page == Page::Dashboard && state.borrow().has_server_url() {
         trigger_fetch_current_measures(
             state.clone(),
@@ -338,6 +359,8 @@ fn build_settings_page(
                 let mut model = state.borrow_mut();
                 model.theme_mode = theme_mode;
             }
+            // Theme changes apply immediately. They are not persisted yet; the
+            // current app state is enough for this session.
             apply_color_scheme(&style_manager, theme_mode);
         }
     });
@@ -381,6 +404,9 @@ fn build_settings_page(
         let status_row = status_row.clone();
 
         move |_| {
+            // The UI stores a user-entered string, while the config file stores
+            // a normalized base URL. Keeping normalization here makes fetch
+            // code simpler and avoids saving unusable values.
             let normalized = match parse_server_url(&url_row.text()) {
                 Ok(url) => url,
                 Err(err) => {
@@ -438,6 +464,9 @@ fn build_settings_page(
             }
 
             if has_url {
+                // Saving a valid URL should make the dashboard useful
+                // immediately, so fetch once instead of waiting for the next
+                // interval tick.
                 trigger_fetch_current_measures(
                     state.clone(),
                     dashboard_widgets.clone(),
@@ -539,6 +568,7 @@ fn start_last_updated_timer(last_updated: Rc<RefCell<Option<Instant>>>, label: L
         }
     };
 
+    // This timer updates only text. It does not fetch data.
     let _ = glib::timeout_add_seconds_local(1, update);
 }
 
@@ -550,6 +580,8 @@ fn start_auto_refresh_timer(
     last_updated_label: Label,
 ) {
     if let Some(source) = auto_refresh_source.borrow_mut().take() {
+        // Removing the old SourceId prevents multiple refresh loops after the
+        // user changes the interval in Settings.
         source.remove();
     }
 
@@ -560,6 +592,7 @@ fn start_auto_refresh_timer(
 
     let interval_secs = normalized_refresh_interval(interval_secs);
     if !has_server_url {
+        // No URL means there is nothing safe to poll.
         return;
     }
 
@@ -570,6 +603,7 @@ fn start_auto_refresh_timer(
 
     let source = glib::timeout_add_seconds_local(interval_secs as u32, move || {
         if !timer_state.borrow().has_server_url() {
+            // Stop the timer if the URL was cleared after the timer was created.
             return glib::ControlFlow::Break;
         }
 
@@ -617,6 +651,9 @@ fn trigger_fetch_current_measures(
     let last_updated_label_for_ui = last_updated_label.clone();
 
     glib::MainContext::default().spawn_local(async move {
+        // `reqwest::blocking` would freeze the GTK main loop if called directly.
+        // `gio::spawn_blocking` runs it on a worker thread and resumes here with
+        // the result so the UI can be updated safely.
         let result = gio::spawn_blocking(move || fetch_current_measurements(&base_url)).await;
         let result = match result {
             Ok(result) => result,
@@ -649,6 +686,8 @@ fn fetch_current_measurements(base_url: &str) -> FetchResult<AirMeasureSnapshot>
         normalized_base_url.trim_end_matches('/')
     );
 
+    // The client is small enough to create per request. If the app grows into a
+    // high-frequency poller, this could be moved into shared state.
     let client = Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
@@ -677,6 +716,8 @@ fn parse_server_url(raw: &str) -> FetchResult<Option<String>> {
     let candidate = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
+        // Users commonly paste just an IP address. Default to HTTP because the
+        // AirGradient local server is normally plain HTTP on the local network.
         format!("http://{trimmed}")
     };
 
@@ -693,6 +734,7 @@ fn parse_server_url(raw: &str) -> FetchResult<Option<String>> {
         return Err("URL missing host component.".to_string());
     }
 
+    // Store only the base URL. Fetching always appends `/measures/current`.
     parsed.set_path("");
     parsed.set_query(None);
     parsed.set_fragment(None);
@@ -738,6 +780,8 @@ fn theme_mode_index(theme_mode: ThemeMode) -> u32 {
 }
 
 fn update_dark_shell_class(root: &GtkBox, is_dark: bool) {
+    // Libadwaita handles the general theme; this class is only for the app's
+    // custom dashboard shell background.
     if is_dark {
         root.add_css_class("dark-app-shell");
     } else {
