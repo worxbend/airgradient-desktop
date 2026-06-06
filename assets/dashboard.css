@@ -1,0 +1,227 @@
+.flat-header {
+  background: @window_bg_color;
+  border-bottom-style: none;
+  border-bottom-width: 0;
+  box-shadow: none;
+}
+
+.app-shell {
+  background: @window_bg_color;
+}
+
+.app-shell.dark-app-shell {
+  background: #17151f;
+}
+
+.dark-app-shell .flat-header {
+  background: #17151f;
+}
+
+.dark-app-shell .dashboard-page {
+  background: #17151f;
+}
+
+.dashboard-page {
+  background: transparent;
+}
+
+.sensor-card,
+.metric-card,
+.aqi-card {
+  border-radius: 12px;
+  color: #3d3846;
+  padding: 20px;
+}
+
+.sensor-card,
+.metric-card {
+  min-height: 108px;
+  min-width: 174px;
+}
+
+.environment-stack {
+  min-width: 220px;
+}
+
+.aqi-card {
+  min-height: 190px;
+  min-width: 300px;
+  padding: 22px;
+}
+
+.dashboard-top .metric-card {
+  min-height: 84px;
+  padding: 16px;
+}
+
+.dashboard-top .aqi-card {
+  min-height: 184px;
+}
+
+.compact-sensor-card {
+  min-width: 96px;
+  padding: 10px;
+}
+
+.narrow-sensor-card {
+  min-width: 126px;
+  padding: 12px;
+}
+
+.metric-icon,
+.aqi-icon {
+  border-radius: 999px;
+  background: transparent;
+  color: #3d3846;
+}
+
+.metric-icon {
+  min-width: 56px;
+  min-height: 56px;
+}
+
+.dashboard-top .metric-icon,
+.narrow-sensor-card .metric-icon,
+.compact-sensor-card .metric-icon {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.aqi-icon {
+  min-width: 84px;
+  min-height: 84px;
+}
+
+.dashboard-page .sensor-card label,
+.dashboard-page .metric-card label,
+.dashboard-page .aqi-card label {
+  color: #3d3846;
+}
+
+.metric-title {
+  color: #3d3846;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.metric-value,
+.large-value {
+  color: #241f31;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.05;
+}
+
+.compact-sensor-card .metric-value {
+  font-size: 22px;
+}
+
+.narrow-sensor-card .metric-value {
+  font-size: 24px;
+}
+
+.narrow-sensor-card .metric-title,
+.narrow-sensor-card .metric-unit,
+.narrow-sensor-card .trend-value {
+  font-size: 11px;
+}
+
+.compact-sensor-card .metric-title,
+.compact-sensor-card .metric-unit,
+.compact-sensor-card .trend-value {
+  font-size: 11px;
+}
+
+.aqi-value {
+  color: #241f31;
+  font-size: 56px;
+  font-weight: 800;
+  line-height: 0.95;
+}
+
+.aqi-level {
+  color: #3d3846;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.metric-unit {
+  color: #5e5c64;
+  font-size: 12px;
+}
+
+.trend-context {
+  color: #5e5c64;
+  font-size: 12px;
+}
+
+.trend-value {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.trend-improved {
+  color: #26a269;
+}
+
+.trend-worse {
+  color: #e66100;
+}
+
+.trend-neutral {
+  color: #77767b;
+}
+
+.status-dot {
+  border-radius: 999px;
+  margin: 0;
+}
+
+.temperature-widget {
+  background-image: linear-gradient(135deg, rgba(153, 193, 241, 0.20), rgba(53, 132, 228, 0.08));
+}
+
+.humidity-widget {
+  background-image: linear-gradient(135deg, rgba(143, 240, 164, 0.20), rgba(38, 162, 105, 0.08));
+}
+
+.status-green,
+.aqi-good {
+  border-left: 4px solid #33d17a;
+  background-image: linear-gradient(135deg, rgba(143, 240, 164, 0.18), rgba(38, 162, 105, 0.07));
+}
+
+.status-blue {
+  border-left: 4px solid #3584e4;
+  background-image: linear-gradient(135deg, rgba(153, 193, 241, 0.18), rgba(28, 113, 216, 0.07));
+}
+
+.status-yellow,
+.aqi-moderate {
+  border-left: 4px solid #f5c211;
+  background-image: linear-gradient(135deg, rgba(249, 240, 107, 0.18), rgba(229, 165, 10, 0.07));
+}
+
+.status-orange,
+.aqi-sensitive {
+  border-left: 4px solid #ff7800;
+  background-image: linear-gradient(135deg, rgba(255, 190, 111, 0.18), rgba(198, 70, 0, 0.07));
+}
+
+.status-red,
+.aqi-unhealthy,
+.aqi-very-unhealthy,
+.aqi-hazardous {
+  border-left: 4px solid #ed333b;
+  background-image: linear-gradient(135deg, rgba(246, 97, 81, 0.18), rgba(165, 29, 45, 0.07));
+}
+
+.status-unknown {
+  border-left: 4px solid #9a9996;
+}
+
+button {
+  min-width: 34px;
+  min-height: 34px;
+}

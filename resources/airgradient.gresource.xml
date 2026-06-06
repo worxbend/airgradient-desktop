@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/airgradient/desktop">
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-temperature-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-humidity-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-air-quality-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-co2-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-voc-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-nox-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/status/airgradient-particles-symbolic.svg</file>
+  </gresource>
+</gresources>

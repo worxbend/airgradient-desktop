@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Air Monitor
+GenericName=Air Quality Monitor
+Comment=Monitor an AirGradient local-server device
+Exec=airgradient-desktop
+Icon=airgradient-desktop
+Terminal=false
+Categories=Utility;
+StartupNotify=true

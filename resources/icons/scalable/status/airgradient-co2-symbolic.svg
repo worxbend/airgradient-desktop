@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>airgradient-co2-symbolic</title>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5.2 6.2h5.6M5.2 9.8h5.6" stroke-width="1.2"/>
+    <circle cx="3.4" cy="8" r="2.1" stroke-width="1.6"/>
+    <circle cx="8" cy="8" r="1.7" stroke-width="1.6"/>
+    <circle cx="12.6" cy="8" r="2.1" stroke-width="1.6"/>
+    <path d="M2.5 13.1h1.8M7.2 13.1h1.6M11.7 13.1h1.8" stroke-width="1.1"/>
+  </g>
+</svg>
