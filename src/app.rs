@@ -8,7 +8,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use adw;
 use adw::prelude::*;
 
 use crate::config::read_config;

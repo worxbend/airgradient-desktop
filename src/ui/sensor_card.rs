@@ -253,9 +253,7 @@ pub fn update_trend_labels(
 }
 
 pub fn format_metric_value(value: f32) -> String {
-    if value.abs() >= 100.0 {
-        format!("{value:.0}")
-    } else if value.fract().abs() < 0.05 {
+    if value.abs() >= 100.0 || value.fract().abs() < 0.05 {
         format!("{value:.0}")
     } else {
         format!("{value:.1}")
@@ -274,7 +272,7 @@ fn status_class(color: gdk::RGBA) -> &'static str {
     const GREEN: (f32, f32, f32) = (51.0 / 255.0, 209.0 / 255.0, 122.0 / 255.0);
     const BLUE: (f32, f32, f32) = (53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0);
     const YELLOW: (f32, f32, f32) = (245.0 / 255.0, 194.0 / 255.0, 17.0 / 255.0);
-    const ORANGE: (f32, f32, f32) = (255.0 / 255.0, 120.0 / 255.0, 0.0);
+    const ORANGE: (f32, f32, f32) = (1.0, 120.0 / 255.0, 0.0);
     const RED: (f32, f32, f32) = (237.0 / 255.0, 51.0 / 255.0, 59.0 / 255.0);
 
     let candidates = [

@@ -5,22 +5,20 @@
 //! lower-level dashboard widgets in separate modules.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use adw::{
-    self, prelude::*, ActionRow, ComboRow, EntryRow, HeaderBar, PreferencesGroup, PreferencesPage,
+    prelude::*, ActionRow, ComboRow, EntryRow, HeaderBar, PreferencesGroup, PreferencesPage,
     SpinRow, StatusPage,
 };
-use gio;
 use gtk4::{
-    Align, Box as GtkBox, Button, Image, Label, Orientation, Stack, StackTransitionType, StringList,
-    Switch,
+    Align, Box as GtkBox, Button, Image, Label, Orientation, Stack, StackTransitionType,
+    StringList, Switch,
 };
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -30,6 +28,7 @@ use crate::ui::{
     build_dashboard_page, load_dashboard_css, register_resources, DashboardPageWidgets,
 };
 use crate::{
+    alerts::{AlertMonitor, AlertNotification, AlertSeverity},
     config::{self, AppConfig},
     sensors::{parse_air_measurements, AirMeasureSnapshot},
     state::{AppState, Page, ThemeMode},
@@ -39,13 +38,49 @@ const DEFAULT_WIDTH: i32 = 1180;
 const DEFAULT_HEIGHT: i32 = 780;
 const REQUEST_TIMEOUT_SECS: u64 = 8;
 const MIN_REFRESH_INTERVAL_SECS: u64 = 5;
-const ALERT_COOLDOWN_SECS: u64 = 20 * 60;
-const ALERT_CONSECUTIVE_READINGS: u8 = 2;
 const APP_NAME: &str = "Air Monitor";
 static NOTIFICATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 type FetchResult<T> = Result<T, String>;
 type SharedAlertMonitor = Rc<RefCell<AlertMonitor>>;
+
+#[derive(Clone)]
+struct UiContext {
+    app: adw::Application,
+    state: Rc<RefCell<AppState>>,
+    dashboard_widgets: DashboardPageWidgets,
+    last_updated: Rc<RefCell<Option<Instant>>>,
+    last_updated_label: Label,
+    alert_monitor: SharedAlertMonitor,
+}
+
+impl UiContext {
+    fn trigger_fetch(&self) {
+        trigger_fetch_current_measures(self.clone());
+    }
+}
+
+#[derive(Clone)]
+struct NavigationContext {
+    ui: UiContext,
+    stack: Stack,
+}
+
+impl NavigationContext {
+    fn switch_to_page(&self, page: Page) {
+        {
+            let mut model = self.ui.state.borrow_mut();
+            model.set_page(page);
+        }
+        self.stack.set_visible_child_name(page.id());
+
+        // Navigating back to the dashboard is a useful moment to refresh, because
+        // the user is explicitly asking to see current measurements.
+        if page == Page::Dashboard && self.ui.state.borrow().has_server_url() {
+            self.ui.trigger_fetch();
+        }
+    }
+}
 
 pub fn build_main_window(
     app: &adw::Application,
@@ -81,17 +116,21 @@ pub fn build_main_window(
     let alert_monitor = Rc::new(RefCell::new(AlertMonitor::new(
         state.borrow().notifications_enabled,
     )));
+    let ui = UiContext {
+        app: app.clone(),
+        state: state.clone(),
+        dashboard_widgets: dashboard_widgets.clone(),
+        last_updated: last_updated.clone(),
+        last_updated_label: last_updated_label.clone(),
+        alert_monitor,
+    };
 
-    let (page_area, stack) = create_page_area(
-        app.clone(),
-        state.clone(),
-        dashboard_page,
-        dashboard_widgets.clone(),
-        last_updated.clone(),
-        last_updated_label.clone(),
-        auto_refresh_source.clone(),
-        alert_monitor.clone(),
-    );
+    let (page_area, stack) =
+        create_page_area(ui.clone(), dashboard_page, auto_refresh_source.clone());
+    let navigation = NavigationContext {
+        ui: ui.clone(),
+        stack: stack.clone(),
+    };
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.add_css_class("app-shell");
@@ -102,15 +141,7 @@ pub fn build_main_window(
         let root = root.clone();
         move |manager| update_dark_shell_class(&root, manager.is_dark())
     });
-    root.append(&create_header_bar(
-        app.clone(),
-        state.clone(),
-        dashboard_widgets.clone(),
-        stack.clone(),
-        last_updated_label.clone(),
-        last_updated.clone(),
-        alert_monitor.clone(),
-    ));
+    root.append(&create_header_bar(navigation.clone()));
     root.append(&page_area);
     window.set_content(Some(&root));
     install_app_actions(app, &window, &stack, state.clone());
@@ -132,26 +163,11 @@ pub fn build_main_window(
     if state.borrow().has_server_url() {
         // If config already contains a server URL, open directly into useful
         // data instead of waiting for manual refresh.
-        trigger_fetch_current_measures(
-            app.clone(),
-            state.clone(),
-            dashboard_widgets.clone(),
-            last_updated.clone(),
-            last_updated_label.clone(),
-            alert_monitor.clone(),
-        );
+        ui.trigger_fetch();
     }
 
     start_last_updated_timer(last_updated.clone(), last_updated_label.clone());
-    start_auto_refresh_timer(
-        app.clone(),
-        state.clone(),
-        dashboard_widgets.clone(),
-        auto_refresh_source,
-        last_updated.clone(),
-        last_updated_label,
-        alert_monitor,
-    );
+    start_auto_refresh_timer(ui, auto_refresh_source);
 
     if !(run_minimized || state.borrow().start_minimized) {
         window.present();
@@ -263,15 +279,7 @@ impl ksni::Tray for AirMonitorTray {
     }
 }
 
-fn create_header_bar(
-    app: adw::Application,
-    state: Rc<RefCell<AppState>>,
-    dashboard_widgets: DashboardPageWidgets,
-    stack: Stack,
-    last_updated_label: Label,
-    last_updated: Rc<RefCell<Option<Instant>>>,
-    alert_monitor: SharedAlertMonitor,
-) -> HeaderBar {
+fn create_header_bar(navigation: NavigationContext) -> HeaderBar {
     let header = HeaderBar::builder()
         .title_widget(&Label::new(Some(APP_NAME)))
         .build();
@@ -296,104 +304,47 @@ fn create_header_bar(
         .build();
 
     refresh_button.connect_clicked({
-        let state = state.clone();
-        let dashboard_widgets = dashboard_widgets.clone();
-        let last_updated = last_updated.clone();
-        let last_updated_label = last_updated_label.clone();
-        let app = app.clone();
-        let alert_monitor = alert_monitor.clone();
+        let ui = navigation.ui.clone();
         move |_| {
             {
-                let mut model = state.borrow_mut();
+                let mut model = ui.state.borrow_mut();
                 model.register_action();
             }
-            trigger_fetch_current_measures(
-                app.clone(),
-                state.clone(),
-                dashboard_widgets.clone(),
-                last_updated.clone(),
-                last_updated_label.clone(),
-                alert_monitor.clone(),
-            );
+            ui.trigger_fetch();
         }
     });
 
     home_button.connect_clicked({
-        let state = state.clone();
-        let stack = stack.clone();
-        let dashboard_widgets = dashboard_widgets.clone();
-        let last_updated = last_updated.clone();
-        let last_updated_label = last_updated_label.clone();
-        let app = app.clone();
-        let alert_monitor = alert_monitor.clone();
+        let navigation = navigation.clone();
         move |_| {
             // The home button means "default page". Before setup that is
             // Welcome; after setup it is Dashboard.
-            let target = if state.borrow().has_server_url() {
+            let target = if navigation.ui.state.borrow().has_server_url() {
                 Page::Dashboard
             } else {
                 Page::Welcome
             };
-            switch_to_page(
-                target,
-                &state,
-                &stack,
-                &dashboard_widgets,
-                &last_updated,
-                &last_updated_label,
-                &app,
-                &alert_monitor,
-            );
+            navigation.switch_to_page(target);
         }
     });
 
     settings_button.connect_clicked({
-        let state = state.clone();
-        let stack = stack.clone();
-        let dashboard_widgets = dashboard_widgets.clone();
-        let last_updated = last_updated.clone();
-        let last_updated_label = last_updated_label.clone();
-        let app = app.clone();
-        let alert_monitor = alert_monitor.clone();
+        let navigation = navigation.clone();
         move |_| {
-            switch_to_page(
-                Page::Settings,
-                &state,
-                &stack,
-                &dashboard_widgets,
-                &last_updated,
-                &last_updated_label,
-                &app,
-                &alert_monitor,
-            );
+            navigation.switch_to_page(Page::Settings);
         }
     });
 
     help_button.connect_clicked({
-        let state = state.clone();
-        let stack = stack.clone();
-        let dashboard_widgets = dashboard_widgets.clone();
-        let last_updated = last_updated.clone();
-        let last_updated_label = last_updated_label.clone();
-        let app = app.clone();
-        let alert_monitor = alert_monitor.clone();
+        let navigation = navigation.clone();
         move |_| {
-            switch_to_page(
-                Page::Help,
-                &state,
-                &stack,
-                &dashboard_widgets,
-                &last_updated,
-                &last_updated_label,
-                &app,
-                &alert_monitor,
-            );
+            navigation.switch_to_page(Page::Help);
         }
     });
 
     header.pack_start(&home_button);
     header.pack_start(&refresh_button);
-    header.pack_start(&last_updated_label);
+    header.pack_start(&navigation.ui.last_updated_label);
     header.pack_end(&help_button);
     header.pack_end(&settings_button);
 
@@ -401,14 +352,9 @@ fn create_header_bar(
 }
 
 fn create_page_area(
-    app: adw::Application,
-    state: Rc<RefCell<AppState>>,
+    ui: UiContext,
     dashboard_page: GtkBox,
-    dashboard_widgets: DashboardPageWidgets,
-    last_updated: Rc<RefCell<Option<Instant>>>,
-    last_updated_label: Label,
     auto_refresh_source: Rc<RefCell<Option<glib::SourceId>>>,
-    alert_monitor: SharedAlertMonitor,
 ) -> (GtkBox, Stack) {
     let container = GtkBox::new(Orientation::Vertical, 12);
     container.set_margin_top(12);
@@ -426,17 +372,12 @@ fn create_page_area(
     // `gtk4::Stack` keeps all pages alive and switches visibility by name.
     // This is simple for an app with a few pages and avoids rebuilding Settings
     // every time the user navigates.
+    let navigation = NavigationContext {
+        ui,
+        stack: stack.clone(),
+    };
     let welcome_page = build_welcome_page(stack.clone());
-    let settings_page = build_settings_page(
-        app,
-        state.clone(),
-        stack.clone(),
-        dashboard_widgets.clone(),
-        last_updated.clone(),
-        last_updated_label.clone(),
-        auto_refresh_source.clone(),
-        alert_monitor,
-    );
+    let settings_page = build_settings_page(navigation.clone(), auto_refresh_source.clone());
     let help_page = build_help_page();
 
     stack.add_titled(
@@ -458,51 +399,15 @@ fn create_page_area(
 
     container.append(&stack);
 
-    let current_page = state.borrow().current_page;
-    let _ = stack.set_visible_child_name(current_page.id());
+    let current_page = navigation.ui.state.borrow().current_page;
+    stack.set_visible_child_name(current_page.id());
 
     (container, stack)
 }
 
-fn switch_to_page(
-    page: Page,
-    state: &Rc<RefCell<AppState>>,
-    stack: &Stack,
-    dashboard_widgets: &DashboardPageWidgets,
-    last_updated: &Rc<RefCell<Option<Instant>>>,
-    last_updated_label: &Label,
-    app: &adw::Application,
-    alert_monitor: &SharedAlertMonitor,
-) {
-    {
-        let mut model = state.borrow_mut();
-        model.set_page(page);
-    }
-    let _ = stack.set_visible_child_name(page.id());
-
-    // Navigating back to the dashboard is a useful moment to refresh, because
-    // the user is explicitly asking to see current measurements.
-    if page == Page::Dashboard && state.borrow().has_server_url() {
-        trigger_fetch_current_measures(
-            app.clone(),
-            state.clone(),
-            dashboard_widgets.clone(),
-            last_updated.clone(),
-            last_updated_label.clone(),
-            alert_monitor.clone(),
-        );
-    }
-}
-
 fn build_settings_page(
-    app: adw::Application,
-    state: Rc<RefCell<AppState>>,
-    stack: Stack,
-    dashboard_widgets: DashboardPageWidgets,
-    last_updated: Rc<RefCell<Option<Instant>>>,
-    last_updated_label: Label,
+    navigation: NavigationContext,
     auto_refresh_source: Rc<RefCell<Option<glib::SourceId>>>,
-    alert_monitor: SharedAlertMonitor,
 ) -> gtk4::Widget {
     let page = PreferencesPage::builder()
         .title("Settings")
@@ -510,7 +415,7 @@ fn build_settings_page(
         .build();
 
     let theme_options = StringList::new(&["System", "Light", "Dark"]);
-    let current_mode = state.borrow().theme_mode;
+    let current_mode = navigation.ui.state.borrow().theme_mode;
     let theme_row = ComboRow::builder()
         .title("Style")
         .subtitle("Use the system preference or force a light or dark appearance")
@@ -519,7 +424,7 @@ fn build_settings_page(
         .build();
     theme_row.connect_selected_notify({
         let style_manager = adw::StyleManager::default();
-        let state = state.clone();
+        let state = navigation.ui.state.clone();
         move |row| {
             let theme_mode = match row.selected() {
                 1 => ThemeMode::Light,
@@ -538,7 +443,14 @@ fn build_settings_page(
 
     let url_row = EntryRow::builder()
         .title("Local-server Base URL")
-        .text(state.borrow().server_url().unwrap_or_default())
+        .text(
+            navigation
+                .ui
+                .state
+                .borrow()
+                .server_url()
+                .unwrap_or_default(),
+        )
         .build();
     let url_icon = Image::from_icon_name("network-wired-symbolic");
     url_row.add_prefix(&url_icon);
@@ -546,7 +458,7 @@ fn build_settings_page(
     let refresh_row = SpinRow::with_range(MIN_REFRESH_INTERVAL_SECS as f64, 3600.0, 1.0);
     refresh_row.set_title("Refresh Interval");
     refresh_row.set_subtitle("Seconds between automatic measurement updates");
-    refresh_row.set_value(state.borrow().refresh_interval_secs as f64);
+    refresh_row.set_value(navigation.ui.state.borrow().refresh_interval_secs as f64);
     refresh_row.set_numeric(true);
     refresh_row.set_tooltip_text(Some(
         "Refresh interval in seconds. Minimum value is 5 seconds.",
@@ -558,7 +470,7 @@ fn build_settings_page(
         .build();
     let notifications_switch = Switch::builder()
         .valign(Align::Center)
-        .active(state.borrow().notifications_enabled)
+        .active(navigation.ui.state.borrow().notifications_enabled)
         .build();
     notifications_row.add_suffix(&notifications_switch);
     notifications_row.set_activatable_widget(Some(&notifications_switch));
@@ -569,7 +481,7 @@ fn build_settings_page(
         .build();
     let start_minimized_switch = Switch::builder()
         .valign(Align::Center)
-        .active(state.borrow().start_minimized)
+        .active(navigation.ui.state.borrow().start_minimized)
         .build();
     start_minimized_row.add_suffix(&start_minimized_switch);
     start_minimized_row.set_activatable_widget(Some(&start_minimized_switch));
@@ -586,7 +498,7 @@ fn build_settings_page(
     test_notification_row.add_suffix(&test_notification_button);
     test_notification_row.set_activatable_widget(Some(&test_notification_button));
     test_notification_button.connect_clicked({
-        let app = app.clone();
+        let app = navigation.ui.app.clone();
         let test_notification_row = test_notification_row.clone();
         move |_| {
             let result = send_air_quality_notification(
@@ -594,14 +506,17 @@ fn build_settings_page(
                 AlertNotification {
                     id: "airgradient-test-notification".into(),
                     title: "Air Monitor test notification".into(),
-                    body: "Notifications are working. Click this notification to open the dashboard."
-                        .into(),
+                    body:
+                        "Notifications are working. Click this notification to open the dashboard."
+                            .into(),
                     severity: AlertSeverity::Notice,
                 },
             );
             match result {
                 Ok(()) => test_notification_row.set_subtitle("Test notification sent."),
-                Err(err) => test_notification_row.set_subtitle(&format!("Test notification failed: {err}")),
+                Err(err) => {
+                    test_notification_row.set_subtitle(&format!("Test notification failed: {err}"))
+                }
             }
         }
     });
@@ -619,18 +534,13 @@ fn build_settings_page(
     save_row.add_suffix(&Image::from_icon_name("document-save-symbolic"));
 
     save_row.connect_activated({
-        let state = state.clone();
+        let navigation = navigation.clone();
         let url_row = url_row.clone();
         let refresh_row = refresh_row.clone();
         let notifications_switch = notifications_switch.clone();
         let start_minimized_switch = start_minimized_switch.clone();
-        let dashboard_widgets = dashboard_widgets.clone();
-        let stack = stack.clone();
         let auto_refresh_source = auto_refresh_source.clone();
-        let last_updated = last_updated.clone();
         let status_row = status_row.clone();
-        let alert_monitor = alert_monitor.clone();
-        let app = app.clone();
 
         move |_| {
             // The UI stores a user-entered string, while the config file stores
@@ -658,46 +568,50 @@ fn build_settings_page(
             }
 
             {
-                let mut model = state.borrow_mut();
+                let mut model = navigation.ui.state.borrow_mut();
                 model.set_server_url(config.server_url.clone().unwrap_or_default());
                 model.set_refresh_interval(config.refresh_interval_secs);
                 model.set_notifications_enabled(config.notifications_enabled);
                 model.set_start_minimized(config.start_minimized);
             }
-            alert_monitor
+            navigation
+                .ui
+                .alert_monitor
                 .borrow_mut()
                 .set_enabled(config.notifications_enabled);
 
             let has_url = config.server_url.is_some();
             if has_url {
-                stack.set_visible_child_name(Page::Dashboard.id());
-                dashboard_widgets.server_label.set_text(&format!(
-                    "Server URL: {}",
-                    config.server_url.unwrap_or_default()
-                ));
+                navigation
+                    .stack
+                    .set_visible_child_name(Page::Dashboard.id());
+                navigation
+                    .ui
+                    .dashboard_widgets
+                    .server_label
+                    .set_text(&format!(
+                        "Server URL: {}",
+                        config.server_url.unwrap_or_default()
+                    ));
                 status_row.set_subtitle("Saved. Refreshing dashboard.");
             } else {
-                stack.set_visible_child_name(Page::Welcome.id());
-                dashboard_widgets
+                navigation.stack.set_visible_child_name(Page::Welcome.id());
+                navigation
+                    .ui
+                    .dashboard_widgets
                     .server_label
                     .set_text("Server URL: Not configured");
-                dashboard_widgets
+                navigation
+                    .ui
+                    .dashboard_widgets
                     .fetch_status_label
                     .set_text("Server URL removed.");
                 status_row.set_subtitle("Cleared URL. Returning to Welcome.");
             }
 
-            start_auto_refresh_timer(
-                app.clone(),
-                state.clone(),
-                dashboard_widgets.clone(),
-                auto_refresh_source.clone(),
-                last_updated.clone(),
-                last_updated_label.clone(),
-                alert_monitor.clone(),
-            );
+            start_auto_refresh_timer(navigation.ui.clone(), auto_refresh_source.clone());
             {
-                let mut last = last_updated.borrow_mut();
+                let mut last = navigation.ui.last_updated.borrow_mut();
                 *last = None;
             }
 
@@ -705,14 +619,7 @@ fn build_settings_page(
                 // Saving a valid URL should make the dashboard useful
                 // immediately, so fetch once instead of waiting for the next
                 // interval tick.
-                trigger_fetch_current_measures(
-                    app.clone(),
-                    state.clone(),
-                    dashboard_widgets.clone(),
-                    last_updated.clone(),
-                    last_updated_label.clone(),
-                    alert_monitor.clone(),
-                );
+                navigation.ui.trigger_fetch();
             }
         }
     });
@@ -816,13 +723,8 @@ fn start_last_updated_timer(last_updated: Rc<RefCell<Option<Instant>>>, label: L
 }
 
 fn start_auto_refresh_timer(
-    app: adw::Application,
-    state: Rc<RefCell<AppState>>,
-    dashboard_widgets: DashboardPageWidgets,
+    ui: UiContext,
     auto_refresh_source: Rc<RefCell<Option<glib::SourceId>>>,
-    last_updated: Rc<RefCell<Option<Instant>>>,
-    last_updated_label: Label,
-    alert_monitor: SharedAlertMonitor,
 ) {
     if let Some(source) = auto_refresh_source.borrow_mut().take() {
         // Removing the old SourceId prevents multiple refresh loops after the
@@ -831,7 +733,7 @@ fn start_auto_refresh_timer(
     }
 
     let (interval_secs, has_server_url) = {
-        let model = state.borrow();
+        let model = ui.state.borrow();
         (model.refresh_interval_secs, model.has_server_url())
     };
 
@@ -841,27 +743,13 @@ fn start_auto_refresh_timer(
         return;
     }
 
-    let timer_state = state.clone();
-    let timer_widgets = dashboard_widgets.clone();
-    let timer_last_updated = last_updated.clone();
-    let timer_last_updated_label = last_updated_label.clone();
-    let timer_app = app.clone();
-    let timer_alert_monitor = alert_monitor.clone();
-
     let source = glib::timeout_add_seconds_local(interval_secs as u32, move || {
-        if !timer_state.borrow().has_server_url() {
+        if !ui.state.borrow().has_server_url() {
             // Stop the timer if the URL was cleared after the timer was created.
             return glib::ControlFlow::Break;
         }
 
-        trigger_fetch_current_measures(
-            timer_app.clone(),
-            timer_state.clone(),
-            timer_widgets.clone(),
-            timer_last_updated.clone(),
-            timer_last_updated_label.clone(),
-            timer_alert_monitor.clone(),
-        );
+        ui.trigger_fetch();
         glib::ControlFlow::Continue
     });
 
@@ -890,7 +778,7 @@ fn install_app_actions(
                 Page::Settings
             };
             state.borrow_mut().set_page(target);
-            let _ = stack.set_visible_child_name(target.id());
+            stack.set_visible_child_name(target.id());
             window.present();
         }
     });
@@ -937,7 +825,7 @@ fn install_system_tray(
                         Page::Settings
                     };
                     state.borrow_mut().set_page(target);
-                    let _ = stack.set_visible_child_name(target.id());
+                    stack.set_visible_child_name(target.id());
                     window.present();
                 }
                 TrayCommand::HideWindow => window.hide(),
@@ -946,261 +834,6 @@ fn install_system_tray(
         }
         glib::ControlFlow::Continue
     });
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-enum AlertKind {
-    Co2,
-    Aqi,
-    Pm25,
-    Tvoc,
-    Nox,
-    HumidityLow,
-    HumidityHigh,
-    DeviceOffline,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
-enum AlertSeverity {
-    Notice,
-    Warning,
-    Critical,
-}
-
-struct AlertNotification {
-    id: String,
-    title: String,
-    body: String,
-    severity: AlertSeverity,
-}
-
-struct AlertMonitor {
-    enabled: bool,
-    consecutive: HashMap<AlertKind, u8>,
-    active_severity: HashMap<AlertKind, AlertSeverity>,
-    last_sent: HashMap<AlertKind, Instant>,
-    fetch_failures: u8,
-}
-
-impl AlertMonitor {
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            consecutive: HashMap::new(),
-            active_severity: HashMap::new(),
-            last_sent: HashMap::new(),
-            fetch_failures: 0,
-        }
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            self.consecutive.clear();
-            self.active_severity.clear();
-            self.last_sent.clear();
-            self.fetch_failures = 0;
-        }
-    }
-
-    fn evaluate(&mut self, snapshot: &AirMeasureSnapshot) -> Vec<AlertNotification> {
-        if !self.enabled {
-            return Vec::new();
-        }
-
-        self.fetch_failures = 0;
-        let mut alerts = Vec::new();
-
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::Co2,
-            snapshot.co2.and_then(classify_co2),
-            |severity| match severity {
-                AlertSeverity::Notice => (
-                    "CO2 is above 800 ppm",
-                    "Ventilation may be low. Open a window or increase fresh-air ventilation.",
-                ),
-                AlertSeverity::Warning => (
-                    "CO2 is high",
-                    "CO2 is above 1200 ppm. Ventilate now if possible or reduce room occupancy.",
-                ),
-                AlertSeverity::Critical => (
-                    "CO2 is very high",
-                    "CO2 is above 2000 ppm. Leave briefly or improve ventilation immediately if possible.",
-                ),
-            },
-        );
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::Aqi,
-            snapshot.aqi.and_then(classify_aqi),
-            |severity| match severity {
-                AlertSeverity::Notice => (
-                    "AQI is unhealthy for sensitive groups",
-                    "Reduce exposure if you are sensitive. Consider filtration or source control.",
-                ),
-                AlertSeverity::Warning => (
-                    "AQI is unhealthy",
-                    "Air quality may affect everyone. Reduce pollutant sources and improve filtration.",
-                ),
-                AlertSeverity::Critical => (
-                    "AQI is very unhealthy",
-                    "Limit exposure. Use filtration and avoid adding indoor pollution sources.",
-                ),
-            },
-        );
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::Pm25,
-            snapshot.pm25.and_then(classify_pm25),
-            |severity| match severity {
-                AlertSeverity::Notice => (
-                    "PM2.5 is elevated",
-                    "Run an air purifier or improve HVAC filtration; reduce cooking, smoke, or dust sources.",
-                ),
-                AlertSeverity::Warning => (
-                    "PM2.5 is high",
-                    "Particle pollution is high. Use filtration and avoid activities that create particles.",
-                ),
-                AlertSeverity::Critical => (
-                    "PM2.5 is very high",
-                    "Limit exposure and use strong filtration. Check whether outdoor smoke or indoor sources are present.",
-                ),
-            },
-        );
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::Tvoc,
-            snapshot.tvoc.and_then(classify_tvoc),
-            |severity| match severity {
-                AlertSeverity::Notice | AlertSeverity::Warning => (
-                    "VOC level is elevated",
-                    "Ventilate and check recent sources: cleaning products, paint, adhesives, or hobby materials.",
-                ),
-                AlertSeverity::Critical => (
-                    "VOC level is high",
-                    "Ventilate now and remove or seal likely chemical sources if safe to do so.",
-                ),
-            },
-        );
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::Nox,
-            snapshot.nox.and_then(classify_nox),
-            |severity| match severity {
-                AlertSeverity::Notice | AlertSeverity::Warning => (
-                    "NOx level is elevated",
-                    "If cooking or using combustion appliances, use exhaust ventilation or open a window.",
-                ),
-                AlertSeverity::Critical => (
-                    "NOx level is high",
-                    "Increase ventilation and check combustion sources such as gas cooking or heaters.",
-                ),
-            },
-        );
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::HumidityLow,
-            snapshot.humidity.and_then(classify_humidity_low),
-            |_| (
-                "Humidity is low",
-                "Air is dry. Consider humidification if the room feels uncomfortable.",
-            ),
-        );
-        self.push_if_alert(
-            &mut alerts,
-            AlertKind::HumidityHigh,
-            snapshot.humidity.and_then(classify_humidity_high),
-            |severity| match severity {
-                AlertSeverity::Notice | AlertSeverity::Warning => (
-                    "Humidity is high",
-                    "Ventilate or dehumidify to reduce dampness and mold risk.",
-                ),
-                AlertSeverity::Critical => (
-                    "Humidity is very high",
-                    "Dehumidify or ventilate now and check for dampness or leaks.",
-                ),
-            },
-        );
-
-        alerts
-    }
-
-    fn record_fetch_error(&mut self, error: &str) -> Option<AlertNotification> {
-        if !self.enabled {
-            return None;
-        }
-
-        self.fetch_failures = self.fetch_failures.saturating_add(1);
-        if self.fetch_failures < 3 {
-            return None;
-        }
-
-        self.make_alert(
-            AlertKind::DeviceOffline,
-            AlertSeverity::Warning,
-            "AirGradient device is unreachable",
-            &format!("No fresh sensor data after repeated attempts. Last error: {error}"),
-        )
-    }
-
-    fn push_if_alert<F>(
-        &mut self,
-        alerts: &mut Vec<AlertNotification>,
-        kind: AlertKind,
-        severity: Option<AlertSeverity>,
-        text: F,
-    ) where
-        F: FnOnce(AlertSeverity) -> (&'static str, &'static str),
-    {
-        let Some(severity) = severity else {
-            self.consecutive.remove(&kind);
-            self.active_severity.remove(&kind);
-            return;
-        };
-
-        let count = self.consecutive.entry(kind).or_insert(0);
-        *count = count.saturating_add(1);
-        if *count < ALERT_CONSECUTIVE_READINGS {
-            return;
-        }
-
-        let (title, body) = text(severity);
-        if let Some(alert) = self.make_alert(kind, severity, title, body) {
-            alerts.push(alert);
-        }
-    }
-
-    fn make_alert(
-        &mut self,
-        kind: AlertKind,
-        severity: AlertSeverity,
-        title: &str,
-        body: &str,
-    ) -> Option<AlertNotification> {
-        let now = Instant::now();
-        let escalated = self
-            .active_severity
-            .get(&kind)
-            .is_some_and(|active| severity > *active);
-        let cooled_down = self
-            .last_sent
-            .get(&kind)
-            .is_none_or(|last| now.saturating_duration_since(*last).as_secs() >= ALERT_COOLDOWN_SECS);
-
-        if !(escalated || cooled_down) {
-            return None;
-        }
-
-        self.active_severity.insert(kind, severity);
-        self.last_sent.insert(kind, now);
-        Some(AlertNotification {
-            id: format!("airgradient-{kind:?}").to_lowercase(),
-            title: title.to_string(),
-            body: body.to_string(),
-            severity,
-        })
-    }
 }
 
 fn send_air_quality_notification(
@@ -1280,109 +913,23 @@ fn send_air_quality_notification(
     Ok(())
 }
 
-fn classify_co2(value: f32) -> Option<AlertSeverity> {
-    if value > 2000.0 {
-        Some(AlertSeverity::Critical)
-    } else if value > 1200.0 {
-        Some(AlertSeverity::Warning)
-    } else if value > 800.0 {
-        Some(AlertSeverity::Notice)
-    } else {
-        None
-    }
-}
-
-fn classify_aqi(value: f32) -> Option<AlertSeverity> {
-    if value > 200.0 {
-        Some(AlertSeverity::Critical)
-    } else if value > 150.0 {
-        Some(AlertSeverity::Warning)
-    } else if value > 100.0 {
-        Some(AlertSeverity::Notice)
-    } else {
-        None
-    }
-}
-
-fn classify_pm25(value: f32) -> Option<AlertSeverity> {
-    if value > 150.0 {
-        Some(AlertSeverity::Critical)
-    } else if value > 55.0 {
-        Some(AlertSeverity::Warning)
-    } else if value > 35.0 {
-        Some(AlertSeverity::Notice)
-    } else {
-        None
-    }
-}
-
-fn classify_tvoc(value: f32) -> Option<AlertSeverity> {
-    if value > 660.0 {
-        Some(AlertSeverity::Critical)
-    } else if value > 220.0 {
-        Some(AlertSeverity::Warning)
-    } else {
-        None
-    }
-}
-
-fn classify_nox(value: f32) -> Option<AlertSeverity> {
-    if value > 150.0 {
-        Some(AlertSeverity::Critical)
-    } else if value > 50.0 {
-        Some(AlertSeverity::Warning)
-    } else {
-        None
-    }
-}
-
-fn classify_humidity_low(value: f32) -> Option<AlertSeverity> {
-    if value < 30.0 {
-        Some(AlertSeverity::Notice)
-    } else {
-        None
-    }
-}
-
-fn classify_humidity_high(value: f32) -> Option<AlertSeverity> {
-    if value > 75.0 {
-        Some(AlertSeverity::Critical)
-    } else if value > 65.0 {
-        Some(AlertSeverity::Notice)
-    } else {
-        None
-    }
-}
-
-fn trigger_fetch_current_measures(
-    app: adw::Application,
-    state: Rc<RefCell<AppState>>,
-    dashboard_widgets: DashboardPageWidgets,
-    last_updated: Rc<RefCell<Option<Instant>>>,
-    last_updated_label: Label,
-    alert_monitor: SharedAlertMonitor,
-) {
-    let base_url = match state.borrow().server_url() {
+fn trigger_fetch_current_measures(ui: UiContext) {
+    let base_url = match ui.state.borrow().server_url() {
         Some(url) => url.to_string(),
         None => {
-            dashboard_widgets
+            ui.dashboard_widgets
                 .fetch_status_label
                 .set_text("No server URL configured.");
             return;
         }
     };
 
-    dashboard_widgets
+    ui.dashboard_widgets
         .server_label
         .set_text(&format!("Server URL: {base_url}"));
-    dashboard_widgets
+    ui.dashboard_widgets
         .fetch_status_label
         .set_text("Fetching measurements...");
-
-    let dashboard_widgets_for_ui = dashboard_widgets.clone();
-    let last_updated_for_ui = last_updated.clone();
-    let last_updated_label_for_ui = last_updated_label.clone();
-    let app_for_ui = app.clone();
 
     glib::MainContext::default().spawn_local(async move {
         // `reqwest::blocking` would freeze the GTK main loop if called directly.
@@ -1396,25 +943,25 @@ fn trigger_fetch_current_measures(
 
         match result {
             Ok(measurement) => {
-                dashboard_widgets_for_ui.apply_measurements(&measurement);
-                let alerts = alert_monitor.borrow_mut().evaluate(&measurement);
+                ui.dashboard_widgets.apply_measurements(&measurement);
+                let alerts = ui.alert_monitor.borrow_mut().evaluate(&measurement);
                 for alert in alerts {
-                    if let Err(err) = send_air_quality_notification(&app_for_ui, alert) {
+                    if let Err(err) = send_air_quality_notification(&ui.app, alert) {
                         eprintln!("System notification failed: {err}");
                     }
                 }
-                *last_updated_for_ui.borrow_mut() = Some(Instant::now());
-                update_last_updated_text(&last_updated_for_ui, &last_updated_label_for_ui);
-                dashboard_widgets_for_ui
+                *ui.last_updated.borrow_mut() = Some(Instant::now());
+                update_last_updated_text(&ui.last_updated, &ui.last_updated_label);
+                ui.dashboard_widgets
                     .fetch_status_label
                     .set_text("Latest measurements loaded.");
             }
             Err(err) => {
-                dashboard_widgets_for_ui
+                ui.dashboard_widgets
                     .fetch_status_label
                     .set_text(&format!("Fetch failed: {err}"));
-                if let Some(alert) = alert_monitor.borrow_mut().record_fetch_error(&err) {
-                    if let Err(err) = send_air_quality_notification(&app_for_ui, alert) {
+                if let Some(alert) = ui.alert_monitor.borrow_mut().record_fetch_error(&err) {
+                    if let Err(err) = send_air_quality_notification(&ui.app, alert) {
                         eprintln!("System notification failed: {err}");
                     }
                 }
@@ -1531,5 +1078,47 @@ fn update_dark_shell_class(root: &GtkBox, is_dark: bool) {
         root.add_css_class("dark-app-shell");
     } else {
         root.remove_css_class("dark-app-shell");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_refresh_interval, parse_server_url, MIN_REFRESH_INTERVAL_SECS};
+
+    #[test]
+    fn parse_server_url_accepts_empty_value_as_not_configured() {
+        assert_eq!(parse_server_url("   ").expect("empty URL is valid"), None);
+    }
+
+    #[test]
+    fn parse_server_url_defaults_bare_host_to_http() {
+        let normalized = parse_server_url("192.168.1.201").expect("bare host should parse");
+
+        assert_eq!(normalized.as_deref(), Some("http://192.168.1.201"));
+    }
+
+    #[test]
+    fn parse_server_url_keeps_scheme_host_and_port_only() {
+        let normalized =
+            parse_server_url(" https://airgradient.local:8443/measures/current?x=1#readings ")
+                .expect("URL with path should parse");
+
+        assert_eq!(
+            normalized.as_deref(),
+            Some("https://airgradient.local:8443")
+        );
+    }
+
+    #[test]
+    fn parse_server_url_rejects_unsupported_schemes() {
+        let err = parse_server_url("ftp://airgradient.local").expect_err("ftp is unsupported");
+
+        assert!(err.contains("Invalid URL scheme 'ftp'"));
+    }
+
+    #[test]
+    fn normalized_refresh_interval_enforces_minimum() {
+        assert_eq!(normalized_refresh_interval(1), MIN_REFRESH_INTERVAL_SECS);
+        assert_eq!(normalized_refresh_interval(60), 60);
     }
 }

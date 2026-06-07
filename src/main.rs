@@ -4,6 +4,7 @@
 //! and delegates real application startup to `app::run()`, keeping the entry
 //! point easy to scan.
 
+mod alerts;
 mod app;
 mod config;
 mod sensors;
