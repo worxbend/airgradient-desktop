@@ -4,6 +4,14 @@ Air Monitor is a GTK 4 + libadwaita desktop dashboard for an AirGradient device 
 
 The app is intentionally small and direct: configure the device URL, fetch the current measurement payload, normalize it into a Rust data model, and render the result as a GNOME-style air quality dashboard.
 
+## Screenshots
+
+![Air Monitor dashboard](docs/Screenshot-1.png)
+
+![Air Monitor settings](docs/Screenshot-2.png)
+
+![Air Monitor notification and background mode](docs/Screenshot-3.png)
+
 ## What It Shows
 
 The dashboard displays:

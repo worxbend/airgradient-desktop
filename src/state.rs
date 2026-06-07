@@ -47,10 +47,17 @@ pub struct AppState {
     pub theme_mode: ThemeMode,
     pub server_url: Option<String>,
     pub refresh_interval_secs: u64,
+    pub notifications_enabled: bool,
+    pub start_minimized: bool,
 }
 
 impl AppState {
-    pub fn new(server_url: Option<String>, refresh_interval_secs: u64) -> Self {
+    pub fn new(
+        server_url: Option<String>,
+        refresh_interval_secs: u64,
+        notifications_enabled: bool,
+        start_minimized: bool,
+    ) -> Self {
         Self {
             // A configured URL means the app can go straight to the dashboard.
             // Without one, the welcome page explains how to configure the app.
@@ -66,6 +73,8 @@ impl AppState {
             theme_mode: ThemeMode::System,
             server_url,
             refresh_interval_secs,
+            notifications_enabled,
+            start_minimized,
         }
     }
 
@@ -105,5 +114,13 @@ impl AppState {
 
     pub fn set_refresh_interval(&mut self, secs: u64) {
         self.refresh_interval_secs = secs;
+    }
+
+    pub fn set_notifications_enabled(&mut self, enabled: bool) {
+        self.notifications_enabled = enabled;
+    }
+
+    pub fn set_start_minimized(&mut self, enabled: bool) {
+        self.start_minimized = enabled;
     }
 }

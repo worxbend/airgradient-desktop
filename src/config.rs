@@ -22,6 +22,12 @@ pub struct AppConfig {
     /// config files do not contain the field.
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval_secs: u64,
+    /// Whether desktop notifications should be sent for air-quality insights.
+    #[serde(default = "default_notifications_enabled")]
+    pub notifications_enabled: bool,
+    /// Whether the app should start hidden and keep polling in the background.
+    #[serde(default)]
+    pub start_minimized: bool,
 }
 
 impl Default for AppConfig {
@@ -29,12 +35,18 @@ impl Default for AppConfig {
         Self {
             server_url: None,
             refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
+            notifications_enabled: default_notifications_enabled(),
+            start_minimized: false,
         }
     }
 }
 
 fn default_refresh_interval() -> u64 {
     DEFAULT_REFRESH_INTERVAL_SECS
+}
+
+fn default_notifications_enabled() -> bool {
+    true
 }
 
 pub fn read_config() -> io::Result<AppConfig> {
