@@ -4,6 +4,14 @@ Air Monitor is a GTK 4 + libadwaita desktop dashboard for an AirGradient device 
 
 The app is intentionally small and direct: configure the device URL, fetch the current measurement payload, normalize it into a Rust data model, and render the result as a GNOME-style air quality dashboard.
 
+## Why This Exists
+
+I use an AirGradient ONE at my desk because indoor air quality is one of those things that is easy to ignore until it starts affecting focus, comfort, and health. The device itself is a compact indoor air quality monitor with sensors for PM2.5, CO2, TVOC, NOx, temperature, and humidity. It is also open-source friendly and exposes local readings, which makes it a good fit for a small desktop companion app.
+
+The official AirGradient web application is good, but it is not quite the interface I want while working at a PC. The display on the device is also too small to glance at comfortably from a normal sitting position, especially when I just want to know whether CO2 is climbing, humidity is off, or the air needs attention. Air Monitor exists to put those numbers directly on the desktop, in a readable layout, without having to open a browser tab or walk over to the device.
+
+![AirGradient ONE devices](docs/image.png)
+
 ## Screenshots
 
 ![Air Monitor dashboard](docs/Screenshot-1.png)
@@ -202,6 +210,13 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for more detail.
 - Dark mode uses a slightly darker app shell background.
 - Dashboard text uses explicit GNOME dark palette colors on cards so it remains readable on light gradient cards.
 
+## Roadmap
+
+- Implement a lightweight backend proxy so the desktop app does not have to fetch directly from the device.
+- Make the backend proxy available as a public server option.
+- Add a web UI that can run in kiosk mode on a TV or screensaver display.
+- Implement air quality notifications for Discord and Telegram.
+
 ## Dependency Compatibility
 
 `libadwaita` and `gtk4` must be from compatible gtk-rs release trains. This project currently uses:
@@ -233,6 +248,7 @@ sudo update-desktop-database /usr/share/applications
 ## References
 
 - [AirGradient local-server documentation](https://github.com/airgradienthq/arduino/blob/master/docs/local-server.md)
+- [AirGradient ONE indoor air quality monitor](https://www.airgradient.com/airgradient-one/)
 - [gtk-rs documentation](https://gtk-rs.org/)
 - [gtk4-rs book](https://gtk-rs.org/gtk4-rs/git/book/)
 - [GNOME Human Interface Guidelines](https://developer.gnome.org/hig/)
