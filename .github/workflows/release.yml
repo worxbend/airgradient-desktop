@@ -15,8 +15,19 @@ env:
 
 jobs:
   build-linux:
-    name: Build Linux release artifacts
-    runs-on: ubuntu-24.04
+    name: Build Linux ${{ matrix.artifact_arch }} release artifacts
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact_arch: amd64
+            runner: ubuntu-24.04
+            appimage_arch: x86_64
+          - artifact_arch: arm64
+            runner: ubuntu-24.04-arm
+            appimage_arch: aarch64
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,13 +77,13 @@ jobs:
             --user \
             --force-clean \
             --install-deps-from=flathub \
-            --state-dir=/tmp/airgradient-flatpak-state \
-            --repo=/tmp/airgradient-flatpak-repo \
-            /tmp/airgradient-flatpak-build \
+            --state-dir=/tmp/airgradient-flatpak-state-${{ matrix.artifact_arch }} \
+            --repo=/tmp/airgradient-flatpak-repo-${{ matrix.artifact_arch }} \
+            /tmp/airgradient-flatpak-build-${{ matrix.artifact_arch }} \
             packaging/flatpak/${APP_ID}.yml
           flatpak build-bundle \
-            /tmp/airgradient-flatpak-repo \
-            ${BIN_NAME}-${{ steps.version.outputs.version }}-x86_64.flatpak \
+            /tmp/airgradient-flatpak-repo-${{ matrix.artifact_arch }} \
+            ${BIN_NAME}-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}.flatpak \
             ${APP_ID}
 
       - name: Run tests
@@ -85,11 +96,11 @@ jobs:
         run: |
           install -Dm755 \
             "target/release/${BIN_NAME}" \
-            "${BIN_NAME}-${{ steps.version.outputs.version }}-linux-x86_64"
+            "${BIN_NAME}-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}"
 
       - name: Package release tarball
         run: |
-          package="${BIN_NAME}-${{ steps.version.outputs.version }}-linux-x86_64"
+          package="${BIN_NAME}-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}"
           mkdir -p \
             "dist/${package}/usr/bin" \
             "dist/${package}/usr/share/applications" \
@@ -139,13 +150,13 @@ jobs:
           ln -sf "usr/share/icons/hicolor/256x256/apps/${APP_ID}.png" "${appdir}/${APP_ID}.png"
           ln -sf "usr/share/icons/hicolor/256x256/apps/${APP_ID}.png" "${appdir}/.DirIcon"
 
-          wget -q -O linuxdeploy-x86_64.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget -q -O appimagetool-x86_64.AppImage \
-            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x linuxdeploy-x86_64.AppImage appimagetool-x86_64.AppImage
+          wget -q -O linuxdeploy-${{ matrix.appimage_arch }}.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.appimage_arch }}.AppImage
+          wget -q -O appimagetool-${{ matrix.appimage_arch }}.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage
+          chmod +x linuxdeploy-${{ matrix.appimage_arch }}.AppImage appimagetool-${{ matrix.appimage_arch }}.AppImage
 
-          APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-x86_64.AppImage \
+          APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-${{ matrix.appimage_arch }}.AppImage \
             --appdir "${appdir}" \
             --executable "${appdir}/usr/bin/${BIN_NAME}" \
             --desktop-file "${appdir}/usr/share/applications/${APP_ID}.desktop" \
@@ -153,27 +164,35 @@ jobs:
 
           install -Dm755 packaging/appimage/AppRun "${appdir}/AppRun"
 
-          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage \
+          ARCH=${{ matrix.appimage_arch }} APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-${{ matrix.appimage_arch }}.AppImage \
             "${appdir}" \
-            "${BIN_NAME}-${{ steps.version.outputs.version }}-x86_64.AppImage"
+            "${BIN_NAME}-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}.AppImage"
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux ${{ matrix.artifact_arch }} artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: airgradient-desktop-linux-release
+          name: airgradient-desktop-linux-${{ matrix.artifact_arch }}-release
           path: |
-            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64
-            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
-            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.flatpak
-            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.AppImage
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}.tar.gz
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}.flatpak
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-${{ matrix.artifact_arch }}.AppImage
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: build-linux
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: airgradient-desktop-linux-*-release
+          path: release-artifacts
+          merge-multiple: true
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64
-            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
-            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.flatpak
-            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.AppImage
+          files: release-artifacts/*
           generate_release_notes: true

@@ -104,25 +104,25 @@ cargo build --release
 
 ## Linux Release Artifacts
 
-Tagged releases build and publish Linux-only artifacts from GitHub Actions:
+Tagged releases build and publish Linux-only `amd64` and `arm64` artifacts from GitHub Actions:
 
-- `airgradient-desktop-<version>-linux-x86_64`: the plain executable produced by `cargo build --release`. This is the smallest artifact and still requires the runtime dependencies listed above. It does not include desktop launcher files or icons.
-- `airgradient-desktop-<version>-linux-x86_64.tar.gz`: raw release binary plus desktop file, metainfo, application icons, and tray icon assets. This still requires the runtime dependencies listed above.
-- `airgradient-desktop-<version>-x86_64.flatpak`: Flatpak bundle built against the GNOME runtime. The Flatpak installs the desktop launcher, metainfo, application icon, fallback icon name, and tray icon asset inside the sandbox. It also grants network, notifications, and StatusNotifier watcher access for the AirGradient HTTP endpoint, notifications, and tray registration.
-- `airgradient-desktop-<version>-x86_64.AppImage`: self-contained AppImage produced from an AppDir with bundled GTK/libadwaita dependencies where `linuxdeploy` can collect them. It includes the desktop launcher, metainfo, application icons, and tray icon asset. AppImages may still need host graphics, desktop session, D-Bus, and FUSE support.
+- `airgradient-desktop-<version>-linux-<arch>`: the plain executable produced by `cargo build --release`, where `<arch>` is `amd64` or `arm64`. This is the smallest artifact and still requires the runtime dependencies listed above. It does not include desktop launcher files or icons.
+- `airgradient-desktop-<version>-linux-<arch>.tar.gz`: raw release binary plus desktop file, metainfo, application icons, and tray icon assets. This still requires the runtime dependencies listed above.
+- `airgradient-desktop-<version>-linux-<arch>.flatpak`: Flatpak bundle built against the GNOME runtime. The Flatpak installs the desktop launcher, metainfo, application icon, fallback icon name, and tray icon asset inside the sandbox. It also grants network, notifications, and StatusNotifier watcher access for the AirGradient HTTP endpoint, notifications, and tray registration.
+- `airgradient-desktop-<version>-linux-<arch>.AppImage`: self-contained AppImage produced from an AppDir with bundled GTK/libadwaita dependencies where `linuxdeploy` can collect them. It includes the desktop launcher, metainfo, application icons, and tray icon asset. AppImages may still need host graphics, desktop session, D-Bus, and FUSE support.
 
 Install a Flatpak bundle locally:
 
 ```bash
-flatpak install --user ./airgradient-desktop-0.1.0-x86_64.flatpak
+flatpak install --user ./airgradient-desktop-0.1.0-linux-amd64.flatpak
 flatpak run com.airgradient.desktop
 ```
 
 Run an AppImage:
 
 ```bash
-chmod +x airgradient-desktop-0.1.0-x86_64.AppImage
-./airgradient-desktop-0.1.0-x86_64.AppImage
+chmod +x airgradient-desktop-0.1.0-linux-amd64.AppImage
+./airgradient-desktop-0.1.0-linux-amd64.AppImage
 ```
 
 ## Configure A Device
