@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.airgradient.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Air Monitor</name>
+  <summary>Monitor an AirGradient local-server device</summary>
+  <developer id="com.airgradient">
+    <name>AirGradient Desktop contributors</name>
+  </developer>
+  <description>
+    <p>
+      Air Monitor is a GTK 4 and libadwaita desktop dashboard for an
+      AirGradient device that exposes the local-server endpoint.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/oleksandr-balyshyn/airgradient-desktop</url>
+  <launchable type="desktop-id">com.airgradient.desktop.desktop</launchable>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-06-07" />
+  </releases>
+</component>

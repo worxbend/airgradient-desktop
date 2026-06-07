@@ -1,4 +1,4 @@
-name: release
+name: linux release
 
 on:
   push:
@@ -9,44 +9,171 @@ on:
 permissions:
   contents: write
 
+env:
+  APP_ID: com.airgradient.desktop
+  BIN_NAME: airgradient-desktop
+
 jobs:
-  build:
-    name: Build and publish release artifact
-    runs-on: ubuntu-latest
+  build-linux:
+    name: Build Linux release artifacts
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install Linux packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libgtk-4-dev libadwaita-1-dev
+          sudo apt-get install -y \
+            appstream \
+            build-essential \
+            desktop-file-utils \
+            file \
+            flatpak \
+            flatpak-builder \
+            libadwaita-1-dev \
+            libfuse2t64 \
+            libglib2.0-dev \
+            libgtk-4-dev \
+            jq \
+            patchelf \
+            pkg-config \
+            wget
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Determine package version
+        id: version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate assets/${APP_ID}.desktop
+          appstreamcli validate --no-net assets/${APP_ID}.metainfo.xml
+
+      - name: Vendor Cargo dependencies for Flatpak
+        run: |
+          mkdir -p .cargo
+          cargo vendor vendor > .cargo/config.toml
+
+      - name: Build Flatpak bundle
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder \
+            --user \
+            --force-clean \
+            --install-deps-from=flathub \
+            --state-dir=/tmp/airgradient-flatpak-state \
+            --repo=/tmp/airgradient-flatpak-repo \
+            /tmp/airgradient-flatpak-build \
+            packaging/flatpak/${APP_ID}.yml
+          flatpak build-bundle \
+            /tmp/airgradient-flatpak-repo \
+            ${BIN_NAME}-${{ steps.version.outputs.version }}-x86_64.flatpak \
+            ${APP_ID}
+
+      - name: Run tests
+        run: cargo test --locked
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
 
-      - name: Package
+      - name: Stage standalone executable
         run: |
-          mkdir -p dist/usr/bin dist/usr/share/applications dist/usr/share/icons/hicolor/256x256/apps
-          cp target/release/airgradient-desktop dist/usr/bin/
-          cp assets/airgradient-desktop.svg dist/usr/share/icons/hicolor/256x256/apps/airgradient-desktop.svg
-          cp assets/com.airgradient.desktop dist/usr/share/applications/com.airgradient.desktop
-          tar -czf airgradient-desktop-linux-x86_64.tar.gz -C dist .
+          install -Dm755 \
+            "target/release/${BIN_NAME}" \
+            "${BIN_NAME}-${{ steps.version.outputs.version }}-linux-x86_64"
 
-      - name: Archive artifact
+      - name: Package release tarball
+        run: |
+          package="${BIN_NAME}-${{ steps.version.outputs.version }}-linux-x86_64"
+          mkdir -p \
+            "dist/${package}/usr/bin" \
+            "dist/${package}/usr/share/applications" \
+            "dist/${package}/usr/share/icons/hicolor/scalable/apps" \
+            "dist/${package}/usr/share/icons/hicolor/256x256/apps" \
+            "dist/${package}/usr/share/icons/hicolor/256x256/status" \
+            "dist/${package}/usr/share/metainfo"
+
+          install -Dm755 "target/release/${BIN_NAME}" "dist/${package}/usr/bin/${BIN_NAME}"
+          install -Dm644 "assets/${APP_ID}.desktop" "dist/${package}/usr/share/applications/${APP_ID}.desktop"
+          install -Dm644 "assets/${APP_ID}.metainfo.xml" "dist/${package}/usr/share/metainfo/${APP_ID}.metainfo.xml"
+          install -Dm644 assets/airgradient-desktop.svg "dist/${package}/usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+          install -Dm644 assets/airgradient-desktop.svg "dist/${package}/usr/share/icons/hicolor/scalable/apps/airgradient-desktop.svg"
+          install -Dm644 assets/airgradient-desktop.png "dist/${package}/usr/share/icons/hicolor/256x256/apps/${APP_ID}.png"
+          install -Dm644 assets/airgradient-desktop.png "dist/${package}/usr/share/icons/hicolor/256x256/apps/airgradient-desktop.png"
+          install -Dm644 assets/airgradient-tray.png "dist/${package}/usr/share/icons/hicolor/256x256/status/airgradient-tray.png"
+          install -Dm644 assets/airgradient-tray.png "dist/${package}/usr/share/icons/hicolor/256x256/status/airgradient-desktop.png"
+          install -Dm644 assets/airgradient-tray.png "dist/${package}/usr/share/icons/hicolor/256x256/status/${APP_ID}.png"
+
+          tar -czf "${package}.tar.gz" -C dist "${package}"
+
+      - name: Build AppImage
+        run: |
+          appdir="${BIN_NAME}.AppDir"
+          rm -rf "${appdir}"
+          mkdir -p \
+            "${appdir}/usr/bin" \
+            "${appdir}/usr/share/applications" \
+            "${appdir}/usr/share/icons/hicolor/scalable/apps" \
+            "${appdir}/usr/share/icons/hicolor/256x256/apps" \
+            "${appdir}/usr/share/icons/hicolor/256x256/status" \
+            "${appdir}/usr/share/metainfo"
+
+          install -Dm755 "target/release/${BIN_NAME}" "${appdir}/usr/bin/${BIN_NAME}"
+          install -Dm755 packaging/appimage/AppRun "${appdir}/AppRun"
+          install -Dm644 "assets/${APP_ID}.desktop" "${appdir}/usr/share/applications/${APP_ID}.desktop"
+          install -Dm644 "assets/${APP_ID}.metainfo.xml" "${appdir}/usr/share/metainfo/${APP_ID}.metainfo.xml"
+          install -Dm644 assets/airgradient-desktop.svg "${appdir}/usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+          install -Dm644 assets/airgradient-desktop.svg "${appdir}/usr/share/icons/hicolor/scalable/apps/airgradient-desktop.svg"
+          install -Dm644 assets/airgradient-desktop.png "${appdir}/usr/share/icons/hicolor/256x256/apps/${APP_ID}.png"
+          install -Dm644 assets/airgradient-desktop.png "${appdir}/usr/share/icons/hicolor/256x256/apps/airgradient-desktop.png"
+          install -Dm644 assets/airgradient-tray.png "${appdir}/usr/share/icons/hicolor/256x256/status/airgradient-tray.png"
+          install -Dm644 assets/airgradient-tray.png "${appdir}/usr/share/icons/hicolor/256x256/status/airgradient-desktop.png"
+          install -Dm644 assets/airgradient-tray.png "${appdir}/usr/share/icons/hicolor/256x256/status/${APP_ID}.png"
+
+          ln -sf "usr/share/applications/${APP_ID}.desktop" "${appdir}/${APP_ID}.desktop"
+          ln -sf "usr/share/icons/hicolor/256x256/apps/${APP_ID}.png" "${appdir}/${APP_ID}.png"
+          ln -sf "usr/share/icons/hicolor/256x256/apps/${APP_ID}.png" "${appdir}/.DirIcon"
+
+          wget -q -O linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q -O appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage appimagetool-x86_64.AppImage
+
+          APPIMAGE_EXTRACT_AND_RUN=1 ./linuxdeploy-x86_64.AppImage \
+            --appdir "${appdir}" \
+            --executable "${appdir}/usr/bin/${BIN_NAME}" \
+            --desktop-file "${appdir}/usr/share/applications/${APP_ID}.desktop" \
+            --icon-file "${appdir}/usr/share/icons/hicolor/256x256/apps/${APP_ID}.png"
+
+          install -Dm755 packaging/appimage/AppRun "${appdir}/AppRun"
+
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage \
+            "${appdir}" \
+            "${BIN_NAME}-${{ steps.version.outputs.version }}-x86_64.AppImage"
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: airgradient-desktop-linux-x86_64
-          path: airgradient-desktop-linux-x86_64.tar.gz
+          name: airgradient-desktop-linux-release
+          path: |
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.flatpak
+            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.AppImage
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: airgradient-desktop-linux-x86_64.tar.gz
+          files: |
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64
+            airgradient-desktop-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.flatpak
+            airgradient-desktop-${{ steps.version.outputs.version }}-x86_64.AppImage
           generate_release_notes: true

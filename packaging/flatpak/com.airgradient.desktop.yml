@@ -1,0 +1,39 @@
+app-id: com.airgradient.desktop
+runtime: org.gnome.Platform
+runtime-version: "50"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: airgradient-desktop
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/airgradient-desktop/cargo-home
+
+modules:
+  - name: airgradient-desktop
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/airgradient-desktop /app/bin/airgradient-desktop
+      - install -Dm644 assets/com.airgradient.desktop.desktop /app/share/applications/com.airgradient.desktop.desktop
+      - install -Dm644 assets/com.airgradient.desktop.metainfo.xml /app/share/metainfo/com.airgradient.desktop.metainfo.xml
+      - install -Dm644 assets/airgradient-desktop.svg /app/share/icons/hicolor/scalable/apps/com.airgradient.desktop.svg
+      - install -Dm644 assets/airgradient-desktop.svg /app/share/icons/hicolor/scalable/apps/airgradient-desktop.svg
+      - install -Dm644 assets/airgradient-desktop.png /app/share/icons/hicolor/256x256/apps/com.airgradient.desktop.png
+      - install -Dm644 assets/airgradient-desktop.png /app/share/icons/hicolor/256x256/apps/airgradient-desktop.png
+      - install -Dm644 assets/airgradient-tray.png /app/share/icons/hicolor/256x256/status/airgradient-tray.png
+      - install -Dm644 assets/airgradient-tray.png /app/share/icons/hicolor/256x256/status/airgradient-desktop.png
+      - install -Dm644 assets/airgradient-tray.png /app/share/icons/hicolor/256x256/status/com.airgradient.desktop.png
+    sources:
+      - type: dir
+        path: ../..

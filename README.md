@@ -37,7 +37,33 @@ At a high level:
 
 For a deeper explanation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Requirements
+## Linux Requirements
+
+Air Monitor targets Linux only.
+
+Runtime dependencies for the raw binary:
+
+- GTK 4 runtime
+- libadwaita runtime
+- GLib/GIO and GDK Pixbuf runtime libraries
+- hicolor icon theme
+- CA certificates for HTTP client TLS support
+- a desktop notification service
+- a StatusNotifier/AppIndicator-compatible tray host if you want the tray icon
+
+Debian/Ubuntu runtime example:
+
+```bash
+sudo apt install libgtk-4-1 libadwaita-1-0 libglib2.0-0 libgdk-pixbuf-2.0-0 hicolor-icon-theme ca-certificates libnotify-bin
+```
+
+GNOME users may also need the AppIndicator/KStatusNotifier shell extension for tray icons:
+
+```bash
+sudo apt install gnome-shell-extension-appindicator
+```
+
+Build dependencies:
 
 - Rust toolchain, stable channel
 - GTK 4 development files
@@ -45,10 +71,16 @@ For a deeper explanation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `pkg-config`
 - `glib-compile-resources`, normally installed with GLib development tools
 
-Debian/Ubuntu example:
+Debian/Ubuntu build example:
 
 ```bash
 sudo apt install pkg-config libgtk-4-dev libadwaita-1-dev libglib2.0-dev build-essential
+```
+
+Packaging dependencies used by the GitHub Actions release job:
+
+```bash
+sudo apt install flatpak flatpak-builder appstream desktop-file-utils patchelf file wget libfuse2t64
 ```
 
 ## Run Locally
@@ -68,6 +100,29 @@ Run a release build:
 
 ```bash
 cargo build --release
+```
+
+## Linux Release Artifacts
+
+Tagged releases build and publish Linux-only artifacts from GitHub Actions:
+
+- `airgradient-desktop-<version>-linux-x86_64`: the plain executable produced by `cargo build --release`. This is the smallest artifact and still requires the runtime dependencies listed above. It does not include desktop launcher files or icons.
+- `airgradient-desktop-<version>-linux-x86_64.tar.gz`: raw release binary plus desktop file, metainfo, application icons, and tray icon assets. This still requires the runtime dependencies listed above.
+- `airgradient-desktop-<version>-x86_64.flatpak`: Flatpak bundle built against the GNOME runtime. The Flatpak installs the desktop launcher, metainfo, application icon, fallback icon name, and tray icon asset inside the sandbox. It also grants network, notifications, and StatusNotifier watcher access for the AirGradient HTTP endpoint, notifications, and tray registration.
+- `airgradient-desktop-<version>-x86_64.AppImage`: self-contained AppImage produced from an AppDir with bundled GTK/libadwaita dependencies where `linuxdeploy` can collect them. It includes the desktop launcher, metainfo, application icons, and tray icon asset. AppImages may still need host graphics, desktop session, D-Bus, and FUSE support.
+
+Install a Flatpak bundle locally:
+
+```bash
+flatpak install --user ./airgradient-desktop-0.1.0-x86_64.flatpak
+flatpak run com.airgradient.desktop
+```
+
+Run an AppImage:
+
+```bash
+chmod +x airgradient-desktop-0.1.0-x86_64.AppImage
+./airgradient-desktop-0.1.0-x86_64.AppImage
 ```
 
 ## Configure A Device
@@ -159,8 +214,14 @@ After building a release binary:
 
 ```bash
 sudo install -Dm755 target/release/airgradient-desktop /usr/local/bin/airgradient-desktop
-sudo install -Dm644 assets/airgradient-desktop.svg /usr/share/icons/hicolor/256x256/apps/airgradient-desktop.svg
-sudo install -Dm644 assets/com.airgradient.desktop /usr/share/applications/com.airgradient.desktop
+sudo install -Dm644 assets/com.airgradient.desktop.desktop /usr/share/applications/com.airgradient.desktop.desktop
+sudo install -Dm644 assets/com.airgradient.desktop.metainfo.xml /usr/share/metainfo/com.airgradient.desktop.metainfo.xml
+sudo install -Dm644 assets/airgradient-desktop.svg /usr/share/icons/hicolor/scalable/apps/com.airgradient.desktop.svg
+sudo install -Dm644 assets/airgradient-desktop.svg /usr/share/icons/hicolor/scalable/apps/airgradient-desktop.svg
+sudo install -Dm644 assets/airgradient-desktop.png /usr/share/icons/hicolor/256x256/apps/com.airgradient.desktop.png
+sudo install -Dm644 assets/airgradient-tray.png /usr/share/icons/hicolor/256x256/status/airgradient-tray.png
+sudo install -Dm644 assets/airgradient-tray.png /usr/share/icons/hicolor/256x256/status/airgradient-desktop.png
+sudo install -Dm644 assets/airgradient-tray.png /usr/share/icons/hicolor/256x256/status/com.airgradient.desktop.png
 sudo update-desktop-database /usr/share/applications
 ```
 
