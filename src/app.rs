@@ -10,11 +10,10 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+use crate::app_info::APP_ID;
 use crate::config::read_config;
 use crate::state::AppState;
 use crate::ui;
-
-const APP_ID: &str = "com.airgradient.desktop";
 
 pub fn run() {
     let run_minimized = std::env::args().any(|arg| {
@@ -33,9 +32,10 @@ pub fn run() {
 }
 
 fn build_ui(app: &adw::Application, run_minimized: bool) {
-    let config = read_config().ok().unwrap_or_default();
+    let loaded = read_config();
+    let config = loaded.config;
     let server_url = config.server_url;
-    let refresh_interval_secs = config.refresh_interval_secs;
+    let refresh_interval = config.refresh_interval;
     let notifications_enabled = config.notifications_enabled;
     let start_minimized = config.start_minimized;
     // `Rc<RefCell<_>>` is the common gtk-rs pattern for shared mutable state on
@@ -43,9 +43,10 @@ fn build_ui(app: &adw::Application, run_minimized: bool) {
     // state, and `RefCell` performs borrow checks at runtime.
     let state = Rc::new(RefCell::new(AppState::new(
         server_url,
-        refresh_interval_secs,
+        refresh_interval,
         notifications_enabled,
         start_minimized,
+        loaded.startup_notice,
     )));
     let _window = ui::build_main_window(app, state, run_minimized);
 }

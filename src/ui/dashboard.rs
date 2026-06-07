@@ -12,12 +12,15 @@ use gtk4::{gdk, prelude::*};
 use gtk4::{Align, Box as GtkBox, FlowBox, Label, Orientation, ScrolledWindow, SelectionMode};
 
 use super::{
-    aqi_widget::AQIWidget, humidity_widget::HumidityWidget, sensor_card::SensorCard,
+    aqi_widget::AQIWidget,
+    humidity_widget::HumidityWidget,
+    sensor_card::{PresentationStatus, SensorCard},
     temperature_widget::TemperatureWidget,
 };
 use crate::sensors::{
     thresholds::{
         aqi_status_color, co2_status_color, nox_status_color, pm25_status_color, tvoc_status_color,
+        StatusColor,
     },
     AirMeasureSnapshot,
 };
@@ -29,6 +32,39 @@ fn rgba_u8(r: u8, g: u8, b: u8) -> gdk::RGBA {
         f32::from(b) / 255.0,
         1.0,
     )
+}
+
+fn status_rgba(color: StatusColor) -> gdk::RGBA {
+    match color {
+        StatusColor::Green => rgba_u8(51, 209, 122),
+        StatusColor::Yellow => rgba_u8(245, 194, 17),
+        StatusColor::Orange => rgba_u8(255, 120, 0),
+        StatusColor::Red => rgba_u8(237, 51, 59),
+        StatusColor::Purple => rgba_u8(145, 65, 172),
+        StatusColor::Gray => rgba_u8(94, 92, 100),
+    }
+}
+
+fn fixed_status(class: &'static str, r: u8, g: u8, b: u8) -> PresentationStatus {
+    PresentationStatus::new(class, rgba_u8(r, g, b))
+}
+
+fn presentation_status(
+    value: Option<f32>,
+    classify: impl FnOnce(f32) -> StatusColor,
+) -> PresentationStatus {
+    value
+        .map(classify)
+        .map(|color| match color {
+            StatusColor::Green => PresentationStatus::green(status_rgba(color)),
+            StatusColor::Yellow => PresentationStatus::yellow(status_rgba(color)),
+            StatusColor::Orange => PresentationStatus::orange(status_rgba(color)),
+            StatusColor::Red => PresentationStatus::red(status_rgba(color)),
+            StatusColor::Purple | StatusColor::Gray => {
+                PresentationStatus::unknown(status_rgba(color))
+            }
+        })
+        .unwrap_or_else(|| PresentationStatus::unknown(rgba_u8(154, 153, 150)))
 }
 
 #[derive(Clone)]
@@ -74,10 +110,7 @@ impl DashboardPageWidgets {
         self.co2_card.refresh(
             snapshot.co2,
             Some("ppm"),
-            snapshot
-                .co2
-                .map(co2_status_color)
-                .unwrap_or(rgba_u8(154, 153, 150)),
+            presentation_status(snapshot.co2, co2_status_color),
         );
         self.co2_card.set_trend(
             snapshot.co2,
@@ -87,10 +120,7 @@ impl DashboardPageWidgets {
         self.tvoc_card.refresh(
             snapshot.tvoc,
             snapshot.tvoc_unit,
-            snapshot
-                .tvoc
-                .map(tvoc_status_color)
-                .unwrap_or(rgba_u8(154, 153, 150)),
+            presentation_status(snapshot.tvoc, tvoc_status_color),
         );
         self.tvoc_card.set_trend(
             snapshot.tvoc,
@@ -100,25 +130,28 @@ impl DashboardPageWidgets {
         self.nox_card.refresh(
             snapshot.nox,
             snapshot.nox_unit,
-            snapshot
-                .nox
-                .map(nox_status_color)
-                .unwrap_or(rgba_u8(154, 153, 150)),
+            presentation_status(snapshot.nox, nox_status_color),
         );
         self.nox_card.set_trend(
             snapshot.nox,
             previous.as_ref().and_then(|snapshot| snapshot.nox),
             snapshot.nox_unit.unwrap_or("index"),
         );
-        self.pm003_count_card
-            .refresh(snapshot.pm003_count, Some("count"), rgba_u8(53, 132, 228));
+        self.pm003_count_card.refresh(
+            snapshot.pm003_count,
+            Some("count"),
+            fixed_status("status-blue", 53, 132, 228),
+        );
         self.pm003_count_card.set_trend(
             snapshot.pm003_count,
             previous.as_ref().and_then(|snapshot| snapshot.pm003_count),
             "count",
         );
-        self.pm1_card
-            .refresh(snapshot.pm1, Some("µg/m³"), rgba_u8(98, 160, 234));
+        self.pm1_card.refresh(
+            snapshot.pm1,
+            Some("µg/m³"),
+            fixed_status("status-blue", 98, 160, 234),
+        );
         self.pm1_card.set_trend(
             snapshot.pm1,
             previous.as_ref().and_then(|snapshot| snapshot.pm1),
@@ -127,18 +160,18 @@ impl DashboardPageWidgets {
         self.pm25_card.refresh(
             snapshot.pm25,
             Some("µg/m³"),
-            snapshot
-                .pm25
-                .map(pm25_status_color)
-                .unwrap_or(rgba_u8(154, 153, 150)),
+            presentation_status(snapshot.pm25, pm25_status_color),
         );
         self.pm25_card.set_trend(
             snapshot.pm25,
             previous.as_ref().and_then(|snapshot| snapshot.pm25),
             "µg/m³",
         );
-        self.pm10_card
-            .refresh(snapshot.pm10, Some("µg/m³"), rgba_u8(255, 163, 72));
+        self.pm10_card.refresh(
+            snapshot.pm10,
+            Some("µg/m³"),
+            fixed_status("status-orange", 255, 163, 72),
+        );
         self.pm10_card.set_trend(
             snapshot.pm10,
             previous.as_ref().and_then(|snapshot| snapshot.pm10),
@@ -147,10 +180,7 @@ impl DashboardPageWidgets {
 
         self.aqi_widget.refresh(
             snapshot.aqi,
-            snapshot
-                .aqi
-                .map(aqi_status_color)
-                .unwrap_or(rgba_u8(154, 153, 150)),
+            presentation_status(snapshot.aqi, aqi_status_color).color(),
         );
         self.aqi_widget.set_trend(
             snapshot.aqi,

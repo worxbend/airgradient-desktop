@@ -68,6 +68,14 @@ impl AlertMonitor {
     }
 
     pub fn evaluate(&mut self, snapshot: &AirMeasureSnapshot) -> Vec<AlertNotification> {
+        self.evaluate_at(snapshot, Instant::now())
+    }
+
+    pub fn evaluate_at(
+        &mut self,
+        snapshot: &AirMeasureSnapshot,
+        now: Instant,
+    ) -> Vec<AlertNotification> {
         if !self.enabled {
             return Vec::new();
         }
@@ -79,6 +87,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::Co2,
             snapshot.co2.and_then(classify_co2),
+            now,
             |severity| match severity {
                 AlertSeverity::Notice => (
                     "CO2 is above 800 ppm",
@@ -98,6 +107,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::Aqi,
             snapshot.aqi.and_then(classify_aqi),
+            now,
             |severity| match severity {
                 AlertSeverity::Notice => (
                     "AQI is unhealthy for sensitive groups",
@@ -117,6 +127,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::Pm25,
             snapshot.pm25.and_then(classify_pm25),
+            now,
             |severity| match severity {
                 AlertSeverity::Notice => (
                     "PM2.5 is elevated",
@@ -136,6 +147,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::Tvoc,
             snapshot.tvoc.and_then(classify_tvoc),
+            now,
             |severity| match severity {
                 AlertSeverity::Notice | AlertSeverity::Warning => (
                     "VOC level is elevated",
@@ -151,6 +163,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::Nox,
             snapshot.nox.and_then(classify_nox),
+            now,
             |severity| match severity {
                 AlertSeverity::Notice | AlertSeverity::Warning => (
                     "NOx level is elevated",
@@ -166,6 +179,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::HumidityLow,
             snapshot.humidity.and_then(classify_humidity_low),
+            now,
             |_| {
                 (
                     "Humidity is low",
@@ -177,6 +191,7 @@ impl AlertMonitor {
             &mut alerts,
             AlertKind::HumidityHigh,
             snapshot.humidity.and_then(classify_humidity_high),
+            now,
             |severity| match severity {
                 AlertSeverity::Notice | AlertSeverity::Warning => (
                     "Humidity is high",
@@ -193,6 +208,14 @@ impl AlertMonitor {
     }
 
     pub fn record_fetch_error(&mut self, error: &str) -> Option<AlertNotification> {
+        self.record_fetch_error_at(error, Instant::now())
+    }
+
+    pub fn record_fetch_error_at(
+        &mut self,
+        error: &str,
+        now: Instant,
+    ) -> Option<AlertNotification> {
         if !self.enabled {
             return None;
         }
@@ -205,6 +228,7 @@ impl AlertMonitor {
         self.make_alert(
             AlertKind::DeviceOffline,
             AlertSeverity::Warning,
+            now,
             "AirGradient device is unreachable",
             &format!("No fresh sensor data after repeated attempts. Last error: {error}"),
         )
@@ -215,6 +239,7 @@ impl AlertMonitor {
         alerts: &mut Vec<AlertNotification>,
         kind: AlertKind,
         severity: Option<AlertSeverity>,
+        now: Instant,
         text: F,
     ) where
         F: FnOnce(AlertSeverity) -> (&'static str, &'static str),
@@ -232,7 +257,7 @@ impl AlertMonitor {
         }
 
         let (title, body) = text(severity);
-        if let Some(alert) = self.make_alert(kind, severity, title, body) {
+        if let Some(alert) = self.make_alert(kind, severity, now, title, body) {
             alerts.push(alert);
         }
     }
@@ -241,10 +266,10 @@ impl AlertMonitor {
         &mut self,
         kind: AlertKind,
         severity: AlertSeverity,
+        now: Instant,
         title: &str,
         body: &str,
     ) -> Option<AlertNotification> {
-        let now = Instant::now();
         let escalated = self
             .active_severity
             .get(&kind)
@@ -346,6 +371,7 @@ fn classify_humidity_high(value: f32) -> Option<AlertSeverity> {
 mod tests {
     use super::{AlertMonitor, AlertSeverity};
     use crate::sensors::AirMeasureSnapshot;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn waits_for_consecutive_bad_readings_before_alerting() {
@@ -396,6 +422,42 @@ mod tests {
             .expect("third fetch failure should alert");
         assert_eq!(alert.severity, AlertSeverity::Warning);
         assert!(alert.body.contains("connection refused"));
+    }
+
+    #[test]
+    fn cooldown_allows_repeated_alert_after_time_passes() {
+        let mut monitor = AlertMonitor::new(true);
+        let snapshot = AirMeasureSnapshot {
+            pm25: Some(80.0),
+            ..Default::default()
+        };
+        let start = Instant::now();
+
+        assert!(monitor.evaluate_at(&snapshot, start).is_empty());
+        assert_eq!(monitor.evaluate_at(&snapshot, start).len(), 1);
+        assert!(monitor
+            .evaluate_at(&snapshot, start + Duration::from_secs(60))
+            .is_empty());
+
+        let alerts = monitor.evaluate_at(&snapshot, start + Duration::from_secs(20 * 60));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+    }
+
+    #[test]
+    fn fetch_error_cooldown_uses_injected_time() {
+        let mut monitor = AlertMonitor::new(true);
+        let start = Instant::now();
+
+        assert!(monitor.record_fetch_error_at("timeout", start).is_none());
+        assert!(monitor.record_fetch_error_at("timeout", start).is_none());
+        assert!(monitor.record_fetch_error_at("timeout", start).is_some());
+        assert!(monitor
+            .record_fetch_error_at("timeout", start + Duration::from_secs(60))
+            .is_none());
+        assert!(monitor
+            .record_fetch_error_at("timeout", start + Duration::from_secs(20 * 60))
+            .is_some());
     }
 
     #[test]

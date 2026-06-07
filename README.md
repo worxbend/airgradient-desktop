@@ -154,14 +154,19 @@ $HOME/.config/airgradient-desktop/config.json
 src/
   main.rs                 Program entry point.
   app.rs                  Creates the libadwaita application.
+  app_info.rs             Shared application ID and display name.
   config.rs               Reads/writes user configuration.
+  device.rs               Normalizes device URLs and fetches measurements.
+  notifications.rs        Delivers alert notifications through desktop APIs.
   state.rs                In-memory page, URL, theme, and refresh state.
   sensors/
     air_quality.rs        Parses AirGradient JSON into typed values.
-    thresholds.rs         Maps sensor values to GNOME palette colors.
+    thresholds.rs         Classifies sensor values into semantic statuses.
   ui/
-    app.rs                Main window, navigation, settings, fetching.
+    app.rs                Main window, navigation, and timers.
     dashboard.rs          Dashboard layout and measurement application.
+    settings.rs           Settings page and persistence callbacks.
+    tray.rs               StatusNotifier tray integration.
     sensor_card.rs        Reusable pollutant metric card.
     aqi_widget.rs         Large AQI widget.
     temperature_widget.rs Temperature widget.

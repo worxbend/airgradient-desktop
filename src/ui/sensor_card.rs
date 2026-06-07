@@ -12,6 +12,54 @@ use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, DrawingArea, Image, Label, Orientation};
 
 const TREND_CLASSES: [&str; 3] = ["trend-improved", "trend-worse", "trend-neutral"];
+const STATUS_CLASSES: [&str; 6] = [
+    "status-green",
+    "status-blue",
+    "status-yellow",
+    "status-orange",
+    "status-red",
+    "status-unknown",
+];
+
+#[derive(Debug, Clone, Copy)]
+pub struct PresentationStatus {
+    class: &'static str,
+    color: gdk::RGBA,
+}
+
+impl PresentationStatus {
+    pub const fn new(class: &'static str, color: gdk::RGBA) -> Self {
+        Self { class, color }
+    }
+
+    pub fn green(color: gdk::RGBA) -> Self {
+        Self::new("status-green", color)
+    }
+
+    pub fn blue(color: gdk::RGBA) -> Self {
+        Self::new("status-blue", color)
+    }
+
+    pub fn yellow(color: gdk::RGBA) -> Self {
+        Self::new("status-yellow", color)
+    }
+
+    pub fn orange(color: gdk::RGBA) -> Self {
+        Self::new("status-orange", color)
+    }
+
+    pub fn red(color: gdk::RGBA) -> Self {
+        Self::new("status-red", color)
+    }
+
+    pub fn unknown(color: gdk::RGBA) -> Self {
+        Self::new("status-unknown", color)
+    }
+
+    pub fn color(self) -> gdk::RGBA {
+        self.color
+    }
+}
 
 #[derive(Clone)]
 pub struct SensorCard {
@@ -176,30 +224,21 @@ impl SensorCard {
         );
     }
 
-    pub fn update_status(&self, color: gdk::RGBA) {
-        let class = status_class(color);
-        let classes = [
-            "status-green",
-            "status-blue",
-            "status-yellow",
-            "status-orange",
-            "status-red",
-            "status-unknown",
-        ];
-        classes
+    pub fn update_status(&self, status: PresentationStatus) {
+        STATUS_CLASSES
             .iter()
             .for_each(|css_class| self.root.remove_css_class(css_class));
         // The CSS class controls the card accent/gradient. The DrawingArea dot
         // uses the exact same semantic color.
-        self.root.add_css_class(class);
+        self.root.add_css_class(status.class);
 
-        *self.status_color.borrow_mut() = color;
+        *self.status_color.borrow_mut() = status.color;
         self.status_dot.queue_draw();
     }
 
-    pub fn refresh(&self, value: Option<f32>, unit: Option<&str>, status_color: gdk::RGBA) {
+    pub fn refresh(&self, value: Option<f32>, unit: Option<&str>, status: PresentationStatus) {
         self.set_value(value, unit);
-        self.update_status(status_color);
+        self.update_status(status);
     }
 }
 
@@ -266,39 +305,4 @@ fn format_delta(value: f32) -> String {
     } else {
         format!("{value:.1}")
     }
-}
-
-fn status_class(color: gdk::RGBA) -> &'static str {
-    const GREEN: (f32, f32, f32) = (51.0 / 255.0, 209.0 / 255.0, 122.0 / 255.0);
-    const BLUE: (f32, f32, f32) = (53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0);
-    const YELLOW: (f32, f32, f32) = (245.0 / 255.0, 194.0 / 255.0, 17.0 / 255.0);
-    const ORANGE: (f32, f32, f32) = (1.0, 120.0 / 255.0, 0.0);
-    const RED: (f32, f32, f32) = (237.0 / 255.0, 51.0 / 255.0, 59.0 / 255.0);
-
-    let candidates = [
-        ("status-green", GREEN),
-        ("status-blue", BLUE),
-        ("status-yellow", YELLOW),
-        ("status-orange", ORANGE),
-        ("status-red", RED),
-        (
-            "status-unknown",
-            (154.0 / 255.0, 153.0 / 255.0, 150.0 / 255.0),
-        ),
-    ];
-
-    let (r, g, b) = (color.red(), color.green(), color.blue());
-    let mut best = ("status-unknown", f64::MAX);
-    // Threshold helpers return concrete RGBA values. CSS needs class names, so
-    // choose the closest known palette color.
-    for (name, (cr, cg, cb)) in candidates {
-        let distance = ((f64::from(r) - f64::from(cr)).powi(2)
-            + (f64::from(g) - f64::from(cg)).powi(2)
-            + (f64::from(b) - f64::from(cb)).powi(2))
-        .sqrt();
-        if distance < best.1 {
-            best = (name, distance);
-        }
-    }
-    best.0
 }

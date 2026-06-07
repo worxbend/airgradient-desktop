@@ -26,6 +26,10 @@ Owns application startup. It creates `adw::Application`, reads the config file, 
 
 Reads and writes `config.json` under the XDG config directory. It stores only user preferences that should survive app restarts, such as the server URL and refresh interval.
 
+### `src/device.rs`
+
+Owns the AirGradient local-server boundary. It normalizes user-entered base URLs and performs the blocking HTTP request to `/measures/current`. The GTK layer calls this module from `gio::spawn_blocking` so network work does not freeze the main loop.
+
 ### `src/state.rs`
 
 Stores in-memory UI state:
@@ -48,11 +52,19 @@ Normalizes JSON from AirGradient into `AirMeasureSnapshot`.
 
 The app uses `Option<f32>` for sensor values because local-server payloads can vary by model and firmware. A missing value is represented as `None`, not as `0`.
 
+Threshold helpers classify values into semantic status colors. They do not depend on GTK; the UI maps those statuses to concrete GNOME palette colors.
+
+### `src/notifications.rs`
+
+Delivers alert notifications through the available Linux desktop mechanisms. Alert policy stays in `alerts.rs`; this module is only the infrastructure adapter for notification delivery.
+
 ### `src/ui/`
 
 Builds GTK widgets and connects signals.
 
-- `ui/app.rs` owns the window, navigation, settings page, timers, and fetching.
+- `ui/app.rs` owns the window, navigation, and timers.
+- `ui/settings.rs` owns Settings page construction and persistence callbacks.
+- `ui/tray.rs` owns StatusNotifier tray integration.
 - `ui/dashboard.rs` builds the dashboard layout and applies parsed measurements.
 - widget files such as `sensor_card.rs` and `aqi_widget.rs` wrap repeated GTK controls behind small Rust structs.
 
@@ -63,7 +75,7 @@ Settings URL
   -> config::write_config()
   -> AppState::set_server_url()
   -> trigger_fetch_current_measures()
-  -> fetch_current_measurements()
+  -> device::fetch_current_measurements()
   -> HTTP GET /measures/current
   -> parse_air_measurements()
   -> DashboardPageWidgets::apply_measurements()
@@ -74,7 +86,7 @@ Settings URL
 
 `trigger_fetch_current_measures()` starts the fetch and updates status labels.
 
-`fetch_current_measurements()` performs the HTTP request and JSON parsing. It is intentionally not async by itself; it uses `reqwest::blocking` and is called inside `gio::spawn_blocking`.
+`device::fetch_current_measurements()` performs the HTTP request and JSON parsing. It is intentionally not async by itself; it uses `reqwest::blocking` and is called inside `gio::spawn_blocking`.
 
 This avoids freezing the GTK interface while the device responds.
 

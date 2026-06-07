@@ -1,16 +1,8 @@
 //! Binary entry point.
 //!
-//! Rust programs start in `main()`. This file only declares the project modules
-//! and delegates real application startup to `app::run()`, keeping the entry
-//! point easy to scan.
-
-mod alerts;
-mod app;
-mod config;
-mod sensors;
-mod state;
-mod ui;
+//! Rust programs start in `main()`. This file delegates real application
+//! startup to the library crate, keeping the binary easy to scan.
 
 fn main() {
-    app::run();
+    airgradient_desktop::run();
 }

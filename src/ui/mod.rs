@@ -7,9 +7,12 @@
 mod app;
 mod aqi_widget;
 mod dashboard;
+mod fetch;
 mod humidity_widget;
 mod sensor_card;
+mod settings;
 mod temperature_widget;
+mod tray;
 
 pub use app::build_main_window;
 pub use dashboard::{build_dashboard_page, DashboardPageWidgets};

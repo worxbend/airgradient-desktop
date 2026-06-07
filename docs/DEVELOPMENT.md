@@ -15,16 +15,27 @@ cargo run
 Run these before committing behavior changes:
 
 ```bash
-cargo fmt
-cargo test
-cargo build --release
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo check --workspace --all-features
 ```
+
+Dependency checks use Cargo subcommands that may need to be installed locally:
+
+```bash
+(cd /tmp && cargo install cargo-audit cargo-deny --locked)
+cargo audit
+cargo deny check
+```
+
+The CI workflow runs RustSec auditing and cargo-deny policy checks through GitHub Actions so local development does not depend on globally installed Cargo plugins.
 
 ## Adding A New Sensor Value
 
 1. Add a field to `AirMeasureSnapshot` in `src/sensors/air_quality.rs`.
 2. Extend `parse_air_measurements()` with possible JSON key names.
-3. Add or reuse a threshold function in `src/sensors/thresholds.rs`.
+3. Add or reuse a semantic threshold function in `src/sensors/thresholds.rs`.
 4. Add a card or widget in `src/ui/dashboard.rs`.
 5. Update the parser test with a sample payload.
 
@@ -36,7 +47,7 @@ Most pollutant metrics should use `SensorCard`:
 
 ```rust
 let card = SensorCard::new("CO₂", "ppm", "airgradient-co2-symbolic");
-card.refresh(snapshot.co2, Some("ppm"), co2_status_color(value));
+card.refresh(snapshot.co2, Some("ppm"), measurement_status(snapshot.co2, co2_status_color));
 ```
 
 Special layout cards, such as AQI, temperature, and humidity, have their own widget structs.
@@ -79,13 +90,15 @@ gio::spawn_blocking(move || fetch_current_measurements(&base_url))
 
 The closure runs away from the GTK main loop. When it finishes, the async continuation updates the UI on the main thread.
 
+URL normalization and blocking HTTP fetches live in `src/device.rs`. Keep request construction and AirGradient endpoint handling there instead of adding it to GTK callbacks.
+
 ## CSS And Styling
 
 Dashboard CSS lives in `assets/dashboard.css`.
 
 The CSS is loaded with `include_str!`, which embeds it into the Rust binary at compile time. After editing CSS, rebuild or rerun the app.
 
-The UI intentionally uses libadwaita native widgets where possible. Keep Settings pages in `PreferencesPage`, `PreferencesGroup`, and preference row widgets.
+The UI intentionally uses libadwaita native widgets where possible. Keep Settings page construction in `src/ui/settings.rs` with `PreferencesPage`, `PreferencesGroup`, and preference row widgets.
 
 ## Icons
 

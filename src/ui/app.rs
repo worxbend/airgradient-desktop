@@ -5,65 +5,67 @@
 //! lower-level dashboard widgets in separate modules.
 
 use std::cell::RefCell;
-use std::process::Command;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use adw::{
-    prelude::*, ActionRow, ComboRow, EntryRow, HeaderBar, PreferencesGroup, PreferencesPage,
-    SpinRow, StatusPage,
-};
-use gtk4::{
-    Align, Box as GtkBox, Button, Image, Label, Orientation, Stack, StackTransitionType,
-    StringList, Switch,
-};
-use reqwest::blocking::Client;
-use serde_json::Value;
-use url::Url;
+use adw::{prelude::*, ActionRow, HeaderBar, PreferencesGroup, PreferencesPage, StatusPage};
+use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Stack, StackTransitionType};
 
+use crate::config::{ConfigStartupNotice, RefreshInterval};
+use crate::ui::settings::build_settings_page;
+use crate::ui::tray::{install_system_tray, SystemTrayRuntime};
 use crate::ui::{
     build_dashboard_page, load_dashboard_css, register_resources, DashboardPageWidgets,
 };
 use crate::{
-    alerts::{AlertMonitor, AlertNotification, AlertSeverity},
-    config::{self, AppConfig},
-    sensors::{parse_air_measurements, AirMeasureSnapshot},
+    alerts::AlertMonitor,
+    app_info::APP_NAME,
     state::{AppState, Page, ThemeMode},
 };
 
 const DEFAULT_WIDTH: i32 = 1180;
 const DEFAULT_HEIGHT: i32 = 780;
-const REQUEST_TIMEOUT_SECS: u64 = 8;
-const MIN_REFRESH_INTERVAL_SECS: u64 = 5;
-const APP_NAME: &str = "Air Monitor";
-static NOTIFICATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-type FetchResult<T> = Result<T, String>;
 type SharedAlertMonitor = Rc<RefCell<AlertMonitor>>;
 
 #[derive(Clone)]
-struct UiContext {
-    app: adw::Application,
-    state: Rc<RefCell<AppState>>,
-    dashboard_widgets: DashboardPageWidgets,
-    last_updated: Rc<RefCell<Option<Instant>>>,
-    last_updated_label: Label,
-    alert_monitor: SharedAlertMonitor,
+pub(super) struct UiContext {
+    pub(super) app: adw::Application,
+    pub(super) state: Rc<RefCell<AppState>>,
+    pub(super) dashboard_widgets: DashboardPageWidgets,
+    pub(super) last_updated: Rc<RefCell<Option<Instant>>>,
+    pub(super) last_updated_label: Label,
+    pub(super) alert_monitor: SharedAlertMonitor,
 }
 
 impl UiContext {
-    fn trigger_fetch(&self) {
-        trigger_fetch_current_measures(self.clone());
+    pub(super) fn trigger_fetch(&self) {
+        super::fetch::trigger_fetch_current_measures(self.clone());
     }
 }
 
 #[derive(Clone)]
-struct NavigationContext {
-    ui: UiContext,
-    stack: Stack,
+pub(super) struct NavigationContext {
+    pub(super) ui: UiContext,
+    pub(super) stack: Stack,
+}
+
+struct AppRuntime {
+    _hold_guard: gio::ApplicationHoldGuard,
+    _tray: Option<SystemTrayRuntime>,
+    last_updated_source: Option<glib::SourceId>,
+    auto_refresh_source: Rc<RefCell<Option<glib::SourceId>>>,
+}
+
+impl Drop for AppRuntime {
+    fn drop(&mut self) {
+        if let Some(source) = self.last_updated_source.take() {
+            source.remove();
+        }
+        if let Some(source) = self.auto_refresh_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
 }
 
 impl NavigationContext {
@@ -145,7 +147,7 @@ pub fn build_main_window(
     root.append(&page_area);
     window.set_content(Some(&root));
     install_app_actions(app, &window, &stack, state.clone());
-    install_system_tray(app, &window, &stack, state.clone());
+    let tray = install_system_tray(app, &window, &stack, state.clone());
     window.connect_close_request({
         let window = window.clone();
         move |_| {
@@ -154,11 +156,8 @@ pub fn build_main_window(
         }
     });
     // The close button now means "keep running in the background". `app.quit`
-    // is the intentional exit path and can be used by a future tray menu.
-    // Keep the application alive even when its only window is hidden. This
-    // intentionally lives until process exit; `app.quit` remains the explicit
-    // shutdown path.
-    std::mem::forget(app.hold());
+    // is the intentional exit path from the tray menu or application action.
+    let hold_guard = app.hold();
 
     if state.borrow().has_server_url() {
         // If config already contains a server URL, open directly into useful
@@ -166,117 +165,27 @@ pub fn build_main_window(
         ui.trigger_fetch();
     }
 
-    start_last_updated_timer(last_updated.clone(), last_updated_label.clone());
-    start_auto_refresh_timer(ui, auto_refresh_source);
+    let last_updated_source =
+        start_last_updated_timer(last_updated.clone(), last_updated_label.clone());
+    start_auto_refresh_timer(ui, auto_refresh_source.clone());
+
+    let runtime = AppRuntime {
+        _hold_guard: hold_guard,
+        _tray: tray,
+        last_updated_source: Some(last_updated_source),
+        auto_refresh_source: auto_refresh_source.clone(),
+    };
+    // Store runtime resources on the window so they live exactly as long as the
+    // main GTK object. GLib owns this qdata and drops it when the window is
+    // finalized.
+    unsafe {
+        window.set_data("airgradient-runtime", runtime);
+    }
 
     if !(run_minimized || state.borrow().start_minimized) {
         window.present();
     }
     window
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TrayCommand {
-    ShowDashboard,
-    HideWindow,
-    Quit,
-}
-
-struct AirMonitorTray {
-    sender: mpsc::Sender<TrayCommand>,
-}
-
-impl ksni::Tray for AirMonitorTray {
-    fn id(&self) -> String {
-        "airgradient-desktop".into()
-    }
-
-    fn title(&self) -> String {
-        APP_NAME.into()
-    }
-
-    fn icon_name(&self) -> String {
-        "airgradient-desktop".into()
-    }
-
-    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        static TRAY_ICON: OnceLock<ksni::Icon> = OnceLock::new();
-
-        let icon = TRAY_ICON
-            .get_or_init(|| {
-                let pixbuf = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(
-                    include_bytes!("../../assets/airgradient-tray.png").as_slice(),
-                ))
-                .expect("embedded tray icon should be a valid PNG");
-                let width = pixbuf.width();
-                let height = pixbuf.height();
-                let channels = pixbuf.n_channels() as usize;
-                let rowstride = pixbuf.rowstride() as usize;
-                let pixels = pixbuf.read_pixel_bytes();
-                let pixels = pixels.as_ref();
-                let mut data = Vec::with_capacity(width as usize * height as usize * 4);
-
-                for y in 0..height as usize {
-                    let row_start = y * rowstride;
-                    let row_end = row_start + width as usize * channels;
-                    for pixel in pixels[row_start..row_end].chunks_exact(channels) {
-                        let red = pixel[0];
-                        let green = pixel[1];
-                        let blue = pixel[2];
-                        let alpha = if channels >= 4 { pixel[3] } else { 255 };
-                        data.extend_from_slice(&[alpha, red, green, blue]);
-                    }
-                }
-
-                ksni::Icon {
-                    width,
-                    height,
-                    data,
-                }
-            })
-            .clone();
-
-        vec![icon]
-    }
-
-    fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.sender.send(TrayCommand::ShowDashboard);
-    }
-
-    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{MenuItem, StandardItem};
-
-        vec![
-            StandardItem {
-                label: "Show Dashboard".into(),
-                icon_name: "go-home-symbolic".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayCommand::ShowDashboard);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Hide Window".into(),
-                icon_name: "window-close-symbolic".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayCommand::HideWindow);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "Quit".into(),
-                icon_name: "application-exit".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.send(TrayCommand::Quit);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        ]
-    }
 }
 
 fn create_header_bar(navigation: NavigationContext) -> HeaderBar {
@@ -376,7 +285,8 @@ fn create_page_area(
         ui,
         stack: stack.clone(),
     };
-    let welcome_page = build_welcome_page(stack.clone());
+    let startup_notice = navigation.ui.state.borrow().startup_notice.clone();
+    let welcome_page = build_welcome_page(stack.clone(), startup_notice.as_ref());
     let settings_page = build_settings_page(navigation.clone(), auto_refresh_source.clone());
     let help_page = build_help_page();
 
@@ -405,253 +315,7 @@ fn create_page_area(
     (container, stack)
 }
 
-fn build_settings_page(
-    navigation: NavigationContext,
-    auto_refresh_source: Rc<RefCell<Option<glib::SourceId>>>,
-) -> gtk4::Widget {
-    let page = PreferencesPage::builder()
-        .title("Settings")
-        .icon_name("preferences-system-symbolic")
-        .build();
-
-    let theme_options = StringList::new(&["System", "Light", "Dark"]);
-    let current_mode = navigation.ui.state.borrow().theme_mode;
-    let theme_row = ComboRow::builder()
-        .title("Style")
-        .subtitle("Use the system preference or force a light or dark appearance")
-        .model(&theme_options)
-        .selected(theme_mode_index(current_mode))
-        .build();
-    theme_row.connect_selected_notify({
-        let style_manager = adw::StyleManager::default();
-        let state = navigation.ui.state.clone();
-        move |row| {
-            let theme_mode = match row.selected() {
-                1 => ThemeMode::Light,
-                2 => ThemeMode::Dark,
-                _ => ThemeMode::System,
-            };
-            {
-                let mut model = state.borrow_mut();
-                model.theme_mode = theme_mode;
-            }
-            // Theme changes apply immediately. They are not persisted yet; the
-            // current app state is enough for this session.
-            apply_color_scheme(&style_manager, theme_mode);
-        }
-    });
-
-    let url_row = EntryRow::builder()
-        .title("Local-server Base URL")
-        .text(
-            navigation
-                .ui
-                .state
-                .borrow()
-                .server_url()
-                .unwrap_or_default(),
-        )
-        .build();
-    let url_icon = Image::from_icon_name("network-wired-symbolic");
-    url_row.add_prefix(&url_icon);
-
-    let refresh_row = SpinRow::with_range(MIN_REFRESH_INTERVAL_SECS as f64, 3600.0, 1.0);
-    refresh_row.set_title("Refresh Interval");
-    refresh_row.set_subtitle("Seconds between automatic measurement updates");
-    refresh_row.set_value(navigation.ui.state.borrow().refresh_interval_secs as f64);
-    refresh_row.set_numeric(true);
-    refresh_row.set_tooltip_text(Some(
-        "Refresh interval in seconds. Minimum value is 5 seconds.",
-    ));
-
-    let notifications_row = ActionRow::builder()
-        .title("Air Quality Notifications")
-        .subtitle("Notify when CO2, AQI, particles, VOC, NOx, or humidity need attention")
-        .build();
-    let notifications_switch = Switch::builder()
-        .valign(Align::Center)
-        .active(navigation.ui.state.borrow().notifications_enabled)
-        .build();
-    notifications_row.add_suffix(&notifications_switch);
-    notifications_row.set_activatable_widget(Some(&notifications_switch));
-
-    let start_minimized_row = ActionRow::builder()
-        .title("Start Minimized")
-        .subtitle("Start hidden and keep polling in the background on next launch")
-        .build();
-    let start_minimized_switch = Switch::builder()
-        .valign(Align::Center)
-        .active(navigation.ui.state.borrow().start_minimized)
-        .build();
-    start_minimized_row.add_suffix(&start_minimized_switch);
-    start_minimized_row.set_activatable_widget(Some(&start_minimized_switch));
-
-    let test_notification_row = ActionRow::builder()
-        .title("Test Notification")
-        .subtitle("Send a sample alert and test click-to-open behavior")
-        .build();
-    let test_notification_button = Button::builder()
-        .label("Send")
-        .valign(Align::Center)
-        .build();
-    test_notification_button.add_css_class("suggested-action");
-    test_notification_row.add_suffix(&test_notification_button);
-    test_notification_row.set_activatable_widget(Some(&test_notification_button));
-    test_notification_button.connect_clicked({
-        let app = navigation.ui.app.clone();
-        let test_notification_row = test_notification_row.clone();
-        move |_| {
-            let result = send_air_quality_notification(
-                &app,
-                AlertNotification {
-                    id: "airgradient-test-notification".into(),
-                    title: "Air Monitor test notification".into(),
-                    body:
-                        "Notifications are working. Click this notification to open the dashboard."
-                            .into(),
-                    severity: AlertSeverity::Notice,
-                },
-            );
-            match result {
-                Ok(()) => test_notification_row.set_subtitle("Test notification sent."),
-                Err(err) => {
-                    test_notification_row.set_subtitle(&format!("Test notification failed: {err}"))
-                }
-            }
-        }
-    });
-
-    let status_row = ActionRow::builder()
-        .title("Status")
-        .subtitle("Enter a URL like http://192.168.1.201")
-        .build();
-
-    let save_row = ActionRow::builder()
-        .title("Save Settings")
-        .subtitle("Save the server URL and restart the refresh timer")
-        .activatable(true)
-        .build();
-    save_row.add_suffix(&Image::from_icon_name("document-save-symbolic"));
-
-    save_row.connect_activated({
-        let navigation = navigation.clone();
-        let url_row = url_row.clone();
-        let refresh_row = refresh_row.clone();
-        let notifications_switch = notifications_switch.clone();
-        let start_minimized_switch = start_minimized_switch.clone();
-        let auto_refresh_source = auto_refresh_source.clone();
-        let status_row = status_row.clone();
-
-        move |_| {
-            // The UI stores a user-entered string, while the config file stores
-            // a normalized base URL. Keeping normalization here makes fetch
-            // code simpler and avoids saving unusable values.
-            let normalized = match parse_server_url(&url_row.text()) {
-                Ok(url) => url,
-                Err(err) => {
-                    status_row.set_subtitle(&format!("Invalid URL: {err}"));
-                    return;
-                }
-            };
-
-            let raw_interval = (refresh_row.value().round() as u64).max(MIN_REFRESH_INTERVAL_SECS);
-            let config = AppConfig {
-                server_url: normalized,
-                refresh_interval_secs: raw_interval,
-                notifications_enabled: notifications_switch.is_active(),
-                start_minimized: start_minimized_switch.is_active(),
-            };
-
-            if let Err(err) = config::write_config(&config) {
-                status_row.set_subtitle(&format!("Failed to save: {err}"));
-                return;
-            }
-
-            {
-                let mut model = navigation.ui.state.borrow_mut();
-                model.set_server_url(config.server_url.clone().unwrap_or_default());
-                model.set_refresh_interval(config.refresh_interval_secs);
-                model.set_notifications_enabled(config.notifications_enabled);
-                model.set_start_minimized(config.start_minimized);
-            }
-            navigation
-                .ui
-                .alert_monitor
-                .borrow_mut()
-                .set_enabled(config.notifications_enabled);
-
-            let has_url = config.server_url.is_some();
-            if has_url {
-                navigation
-                    .stack
-                    .set_visible_child_name(Page::Dashboard.id());
-                navigation
-                    .ui
-                    .dashboard_widgets
-                    .server_label
-                    .set_text(&format!(
-                        "Server URL: {}",
-                        config.server_url.unwrap_or_default()
-                    ));
-                status_row.set_subtitle("Saved. Refreshing dashboard.");
-            } else {
-                navigation.stack.set_visible_child_name(Page::Welcome.id());
-                navigation
-                    .ui
-                    .dashboard_widgets
-                    .server_label
-                    .set_text("Server URL: Not configured");
-                navigation
-                    .ui
-                    .dashboard_widgets
-                    .fetch_status_label
-                    .set_text("Server URL removed.");
-                status_row.set_subtitle("Cleared URL. Returning to Welcome.");
-            }
-
-            start_auto_refresh_timer(navigation.ui.clone(), auto_refresh_source.clone());
-            {
-                let mut last = navigation.ui.last_updated.borrow_mut();
-                *last = None;
-            }
-
-            if has_url {
-                // Saving a valid URL should make the dashboard useful
-                // immediately, so fetch once instead of waiting for the next
-                // interval tick.
-                navigation.ui.trigger_fetch();
-            }
-        }
-    });
-
-    let appearance_group = PreferencesGroup::builder()
-        .title("Appearance")
-        .description("GNOME apps should follow the system style by default.")
-        .build();
-    appearance_group.add(&theme_row);
-
-    let server_group = PreferencesGroup::builder()
-        .title("Device")
-        .description("Configure the AirGradient local-server endpoint.")
-        .build();
-    server_group.add(&url_row);
-    server_group.add(&refresh_row);
-    server_group.add(&notifications_row);
-    server_group.add(&start_minimized_row);
-    server_group.add(&test_notification_row);
-    server_group.add(&save_row);
-
-    let status_group = PreferencesGroup::new();
-    status_group.add(&status_row);
-
-    page.add(&appearance_group);
-    page.add(&server_group);
-    page.add(&status_group);
-
-    page.upcast()
-}
-
-fn build_welcome_page(stack: Stack) -> gtk4::Widget {
+fn build_welcome_page(stack: Stack, startup_notice: Option<&ConfigStartupNotice>) -> gtk4::Widget {
     let open_settings_button = Button::builder().label("Open Settings").build();
     open_settings_button.add_css_class("suggested-action");
     open_settings_button.connect_clicked(move |_| {
@@ -662,13 +326,21 @@ fn build_welcome_page(stack: Stack) -> gtk4::Widget {
     actions.set_halign(Align::Center);
     actions.append(&open_settings_button);
 
+    let description = match startup_notice {
+        Some(ConfigStartupNotice::ReadFailed(_)) | Some(ConfigStartupNotice::ParseFailed(_)) => {
+            format!(
+                "{} {}",
+                "Saved settings could not be loaded, so defaults are active.",
+                "Open Settings to review and save a corrected configuration."
+            )
+        }
+        _ => "Configure the local-server base URL to start showing measurements. Accepted formats include http://192.168.1.201, 192.168.1.201, and http://192.168.1.201:80.".to_string(),
+    };
+
     let page = StatusPage::builder()
         .icon_name("network-wireless-symbolic")
         .title("Connect Device")
-        .description(
-            "Configure the local-server base URL to start showing measurements. \
-             Accepted formats include http://192.168.1.201, 192.168.1.201, and http://192.168.1.201:80.",
-        )
+        .description(&description)
         .child(&actions)
         .build();
 
@@ -708,7 +380,10 @@ fn build_help_page() -> gtk4::Widget {
     page.upcast()
 }
 
-fn start_last_updated_timer(last_updated: Rc<RefCell<Option<Instant>>>, label: Label) {
+fn start_last_updated_timer(
+    last_updated: Rc<RefCell<Option<Instant>>>,
+    label: Label,
+) -> glib::SourceId {
     let update = {
         let last_updated = last_updated.clone();
         let label = label.clone();
@@ -719,10 +394,10 @@ fn start_last_updated_timer(last_updated: Rc<RefCell<Option<Instant>>>, label: L
     };
 
     // This timer updates only text. It does not fetch data.
-    let _ = glib::timeout_add_seconds_local(1, update);
+    glib::timeout_add_seconds_local(1, update)
 }
 
-fn start_auto_refresh_timer(
+pub(super) fn start_auto_refresh_timer(
     ui: UiContext,
     auto_refresh_source: Rc<RefCell<Option<glib::SourceId>>>,
 ) {
@@ -734,16 +409,18 @@ fn start_auto_refresh_timer(
 
     let (interval_secs, has_server_url) = {
         let model = ui.state.borrow();
-        (model.refresh_interval_secs, model.has_server_url())
+        (
+            normalized_refresh_interval(model.refresh_interval.as_secs()),
+            model.has_server_url(),
+        )
     };
 
-    let interval_secs = normalized_refresh_interval(interval_secs);
     if !has_server_url {
         // No URL means there is nothing safe to poll.
         return;
     }
 
-    let source = glib::timeout_add_seconds_local(interval_secs as u32, move || {
+    let source = glib::timeout_add_seconds_local(interval_secs.as_secs() as u32, move || {
         if !ui.state.borrow().has_server_url() {
             // Stop the timer if the URL was cleared after the timer was created.
             return glib::ControlFlow::Break;
@@ -756,8 +433,8 @@ fn start_auto_refresh_timer(
     *auto_refresh_source.borrow_mut() = Some(source);
 }
 
-fn normalized_refresh_interval(raw: u64) -> u64 {
-    raw.max(MIN_REFRESH_INTERVAL_SECS)
+fn normalized_refresh_interval(raw: u64) -> RefreshInterval {
+    RefreshInterval::clamped(raw)
 }
 
 fn install_app_actions(
@@ -792,249 +469,7 @@ fn install_app_actions(
     app.add_action(&quit);
 }
 
-fn install_system_tray(
-    app: &adw::Application,
-    window: &adw::ApplicationWindow,
-    stack: &Stack,
-    state: Rc<RefCell<AppState>>,
-) {
-    let (sender, receiver) = mpsc::channel();
-    let tray = AirMonitorTray { sender };
-    match ksni::blocking::TrayMethods::assume_sni_available(tray, true).spawn() {
-        Ok(handle) => {
-            // Dropping the handle shuts down the tray service. The tray should
-            // live until explicit app quit.
-            std::mem::forget(handle);
-        }
-        Err(err) => {
-            eprintln!("System tray unavailable: {err}");
-            return;
-        }
-    }
-
-    let app = app.clone();
-    let window = window.clone();
-    let stack = stack.clone();
-    glib::timeout_add_local(Duration::from_millis(250), move || {
-        while let Ok(command) = receiver.try_recv() {
-            match command {
-                TrayCommand::ShowDashboard => {
-                    let target = if state.borrow().has_server_url() {
-                        Page::Dashboard
-                    } else {
-                        Page::Settings
-                    };
-                    state.borrow_mut().set_page(target);
-                    stack.set_visible_child_name(target.id());
-                    window.present();
-                }
-                TrayCommand::HideWindow => window.hide(),
-                TrayCommand::Quit => app.quit(),
-            }
-        }
-        glib::ControlFlow::Continue
-    });
-}
-
-fn send_air_quality_notification(
-    app: &adw::Application,
-    alert: AlertNotification,
-) -> Result<(), String> {
-    let urgency = match alert.severity {
-        AlertSeverity::Notice => "normal",
-        AlertSeverity::Warning => "normal",
-        AlertSeverity::Critical => "critical",
-    };
-    let expire_time = match alert.severity {
-        AlertSeverity::Notice => "8000",
-        AlertSeverity::Warning | AlertSeverity::Critical => "0",
-    };
-
-    let notify_send_result = Command::new("notify-send")
-        .arg("--app-name")
-        .arg(APP_NAME)
-        .arg("--icon")
-        .arg("airgradient-desktop")
-        .arg("--urgency")
-        .arg(urgency)
-        .arg("--expire-time")
-        .arg(expire_time)
-        .arg(&alert.title)
-        .arg(&alert.body)
-        .status();
-
-    match notify_send_result {
-        Ok(status) if status.success() => return Ok(()),
-        Ok(status) => eprintln!("notify-send exited with status {status}"),
-        Err(err) => eprintln!("notify-send failed to start: {err}"),
-    }
-
-    let system_result = notify_rust::Notification::new()
-        .appname(APP_NAME)
-        .summary(&alert.title)
-        .body(&alert.body)
-        .icon("airgradient-desktop")
-        .hint(notify_rust::Hint::DesktopEntry(
-            "com.airgradient.desktop".into(),
-        ))
-        .hint(notify_rust::Hint::Category("device".into()))
-        .urgency(match alert.severity {
-            AlertSeverity::Notice => notify_rust::Urgency::Normal,
-            AlertSeverity::Warning => notify_rust::Urgency::Normal,
-            AlertSeverity::Critical => notify_rust::Urgency::Critical,
-        })
-        .timeout(match alert.severity {
-            AlertSeverity::Notice => notify_rust::Timeout::Milliseconds(8_000),
-            AlertSeverity::Warning | AlertSeverity::Critical => notify_rust::Timeout::Never,
-        })
-        .show();
-
-    if let Err(err) = system_result {
-        eprintln!("notify-rust failed, falling back to GNotification: {err}");
-    } else {
-        return Ok(());
-    }
-
-    let notification = gio::Notification::new(&alert.title);
-    notification.set_body(Some(&alert.body));
-    notification.set_default_action("app.show-dashboard");
-    notification.add_button("Open Dashboard", "app.show-dashboard");
-    notification.set_priority(match alert.severity {
-        AlertSeverity::Notice => gio::NotificationPriority::Normal,
-        AlertSeverity::Warning => gio::NotificationPriority::High,
-        AlertSeverity::Critical => gio::NotificationPriority::Urgent,
-    });
-    let unique_id = format!(
-        "{}-{}",
-        alert.id,
-        NOTIFICATION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
-    app.send_notification(Some(&unique_id), &notification);
-    Ok(())
-}
-
-fn trigger_fetch_current_measures(ui: UiContext) {
-    let base_url = match ui.state.borrow().server_url() {
-        Some(url) => url.to_string(),
-        None => {
-            ui.dashboard_widgets
-                .fetch_status_label
-                .set_text("No server URL configured.");
-            return;
-        }
-    };
-
-    ui.dashboard_widgets
-        .server_label
-        .set_text(&format!("Server URL: {base_url}"));
-    ui.dashboard_widgets
-        .fetch_status_label
-        .set_text("Fetching measurements...");
-
-    glib::MainContext::default().spawn_local(async move {
-        // `reqwest::blocking` would freeze the GTK main loop if called directly.
-        // `gio::spawn_blocking` runs it on a worker thread and resumes here with
-        // the result so the UI can be updated safely.
-        let result = gio::spawn_blocking(move || fetch_current_measurements(&base_url)).await;
-        let result = match result {
-            Ok(result) => result,
-            Err(_) => Err("Background fetch task failed to execute.".to_string()),
-        };
-
-        match result {
-            Ok(measurement) => {
-                ui.dashboard_widgets.apply_measurements(&measurement);
-                let alerts = ui.alert_monitor.borrow_mut().evaluate(&measurement);
-                for alert in alerts {
-                    if let Err(err) = send_air_quality_notification(&ui.app, alert) {
-                        eprintln!("System notification failed: {err}");
-                    }
-                }
-                *ui.last_updated.borrow_mut() = Some(Instant::now());
-                update_last_updated_text(&ui.last_updated, &ui.last_updated_label);
-                ui.dashboard_widgets
-                    .fetch_status_label
-                    .set_text("Latest measurements loaded.");
-            }
-            Err(err) => {
-                ui.dashboard_widgets
-                    .fetch_status_label
-                    .set_text(&format!("Fetch failed: {err}"));
-                if let Some(alert) = ui.alert_monitor.borrow_mut().record_fetch_error(&err) {
-                    if let Err(err) = send_air_quality_notification(&ui.app, alert) {
-                        eprintln!("System notification failed: {err}");
-                    }
-                }
-            }
-        }
-    });
-}
-
-fn fetch_current_measurements(base_url: &str) -> FetchResult<AirMeasureSnapshot> {
-    let normalized_base_url =
-        parse_server_url(base_url)?.ok_or_else(|| "No server URL configured.".to_string())?;
-    let url = format!(
-        "{}/measures/current",
-        normalized_base_url.trim_end_matches('/')
-    );
-
-    // The client is small enough to create per request. If the app grows into a
-    // high-frequency poller, this could be moved into shared state.
-    let client = Client::builder()
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|err| format!("HTTP client error: {err}"))?;
-
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|err| format!("Request failed: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Server returned HTTP {}", response.status()));
-    }
-
-    let payload: Value = response
-        .json()
-        .map_err(|err| format!("Invalid JSON response: {err}"))?;
-    Ok(parse_air_measurements(&payload))
-}
-
-fn parse_server_url(raw: &str) -> FetchResult<Option<String>> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    let candidate = if trimmed.contains("://") {
-        trimmed.to_string()
-    } else {
-        // Users commonly paste just an IP address. Default to HTTP because the
-        // AirGradient local server is normally plain HTTP on the local network.
-        format!("http://{trimmed}")
-    };
-
-    let mut parsed = Url::parse(&candidate).map_err(|err| format!("Invalid URL: {err}"))?;
-
-    match parsed.scheme() {
-        "http" | "https" => {}
-        scheme => {
-            return Err(format!("Invalid URL scheme '{scheme}'. Use http or https."));
-        }
-    }
-
-    if parsed.host().is_none() {
-        return Err("URL missing host component.".to_string());
-    }
-
-    // Store only the base URL. Fetching always appends `/measures/current`.
-    parsed.set_path("");
-    parsed.set_query(None);
-    parsed.set_fragment(None);
-
-    Ok(Some(parsed.to_string().trim_end_matches('/').to_string()))
-}
-
-fn update_last_updated_text(last_updated: &Rc<RefCell<Option<Instant>>>, label: &Label) {
+pub(super) fn update_last_updated_text(last_updated: &Rc<RefCell<Option<Instant>>>, label: &Label) {
     let text = match *last_updated.borrow() {
         Some(last) => {
             let elapsed = Instant::now().saturating_duration_since(last);
@@ -1054,7 +489,7 @@ fn update_last_updated_text(last_updated: &Rc<RefCell<Option<Instant>>>, label: 
     label.set_text(&text);
 }
 
-fn apply_color_scheme(style_manager: &adw::StyleManager, theme_mode: ThemeMode) {
+pub(super) fn apply_color_scheme(style_manager: &adw::StyleManager, theme_mode: ThemeMode) {
     let scheme = match theme_mode {
         ThemeMode::System => adw::ColorScheme::Default,
         ThemeMode::Light => adw::ColorScheme::ForceLight,
@@ -1063,7 +498,7 @@ fn apply_color_scheme(style_manager: &adw::StyleManager, theme_mode: ThemeMode) 
     style_manager.set_color_scheme(scheme);
 }
 
-fn theme_mode_index(theme_mode: ThemeMode) -> u32 {
+pub(super) fn theme_mode_index(theme_mode: ThemeMode) -> u32 {
     match theme_mode {
         ThemeMode::System => 0,
         ThemeMode::Light => 1,
@@ -1083,42 +518,15 @@ fn update_dark_shell_class(root: &GtkBox, is_dark: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_refresh_interval, parse_server_url, MIN_REFRESH_INTERVAL_SECS};
-
-    #[test]
-    fn parse_server_url_accepts_empty_value_as_not_configured() {
-        assert_eq!(parse_server_url("   ").expect("empty URL is valid"), None);
-    }
-
-    #[test]
-    fn parse_server_url_defaults_bare_host_to_http() {
-        let normalized = parse_server_url("192.168.1.201").expect("bare host should parse");
-
-        assert_eq!(normalized.as_deref(), Some("http://192.168.1.201"));
-    }
-
-    #[test]
-    fn parse_server_url_keeps_scheme_host_and_port_only() {
-        let normalized =
-            parse_server_url(" https://airgradient.local:8443/measures/current?x=1#readings ")
-                .expect("URL with path should parse");
-
-        assert_eq!(
-            normalized.as_deref(),
-            Some("https://airgradient.local:8443")
-        );
-    }
-
-    #[test]
-    fn parse_server_url_rejects_unsupported_schemes() {
-        let err = parse_server_url("ftp://airgradient.local").expect_err("ftp is unsupported");
-
-        assert!(err.contains("Invalid URL scheme 'ftp'"));
-    }
+    use super::normalized_refresh_interval;
+    use crate::config::MIN_REFRESH_INTERVAL_SECS;
 
     #[test]
     fn normalized_refresh_interval_enforces_minimum() {
-        assert_eq!(normalized_refresh_interval(1), MIN_REFRESH_INTERVAL_SECS);
-        assert_eq!(normalized_refresh_interval(60), 60);
+        assert_eq!(
+            normalized_refresh_interval(1).as_secs(),
+            MIN_REFRESH_INTERVAL_SECS
+        );
+        assert_eq!(normalized_refresh_interval(60).as_secs(), 60);
     }
 }

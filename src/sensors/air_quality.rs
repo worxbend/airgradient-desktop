@@ -164,8 +164,18 @@ fn find_nested_key(raw: &Value, key: &str) -> Option<f32> {
 fn has_any_key(raw: &Value, candidates: &[&str]) -> bool {
     candidates.iter().any(|key| {
         let lower = key.to_lowercase();
-        raw.get(*key).is_some() || raw.get(lower.as_str()).is_some()
+        has_nested_key(raw, key) || has_nested_key(raw, lower.as_str())
     })
+}
+
+fn has_nested_key(raw: &Value, key: &str) -> bool {
+    match raw {
+        Value::Object(object) => {
+            object.contains_key(key) || object.values().any(|value| has_nested_key(value, key))
+        }
+        Value::Array(items) => items.iter().any(|value| has_nested_key(value, key)),
+        _ => false,
+    }
 }
 
 fn pm25_to_us_aqi(pm25: f32) -> f32 {
@@ -233,5 +243,38 @@ mod tests {
         assert_eq!(snapshot.nox, Some(1.0));
         assert_eq!(snapshot.nox_unit, Some("index"));
         assert_eq!(snapshot.aqi.map(|value| value.round()), Some(29.0));
+    }
+
+    #[test]
+    fn parses_nested_payloads_with_numeric_strings() {
+        let payload = json!({
+            "device": {
+                "measurements": [
+                    {
+                        "rco2": "812",
+                        "pm02": "13.2",
+                        "atmpCompensated": "22.4",
+                        "rhumCompensated": "45.5"
+                    },
+                    {
+                        "tvocIndex": "110",
+                        "noxIndex": "3",
+                        "pm003Count": "1200"
+                    }
+                ]
+            }
+        });
+
+        let snapshot = parse_air_measurements(&payload);
+
+        assert_eq!(snapshot.co2, Some(812.0));
+        assert_eq!(snapshot.pm25, Some(13.2));
+        assert_eq!(snapshot.temperature, Some(22.4));
+        assert_eq!(snapshot.humidity, Some(45.5));
+        assert_eq!(snapshot.tvoc, Some(110.0));
+        assert_eq!(snapshot.tvoc_unit, Some("index"));
+        assert_eq!(snapshot.nox, Some(3.0));
+        assert_eq!(snapshot.nox_unit, Some("index"));
+        assert_eq!(snapshot.pm003_count, Some(1200.0));
     }
 }

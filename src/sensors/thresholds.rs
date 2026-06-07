@@ -1,68 +1,95 @@
-//! Sensor threshold color mapping.
+//! Sensor threshold status mapping.
 //!
-//! These helpers convert measurements into `gdk::RGBA` colors used by the
-//! dashboard. Color values come from the GNOME palette so the UI remains aligned
-//! with the GNOME Human Interface Guidelines.
+//! These helpers classify measurements into semantic palette slots. The GTK UI
+//! converts those slots into concrete `gdk::RGBA` values at the presentation
+//! boundary.
 
-use gtk4::gdk;
-
-#[inline]
-fn rgba_u8(r: u8, g: u8, b: u8) -> gdk::RGBA {
-    // GTK stores color channels as floats from 0.0 to 1.0. The GNOME palette is
-    // easier for humans to read as 8-bit RGB, so this helper converts it.
-    gdk::RGBA::new(
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
-        1.0,
-    )
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum StatusColor {
+    Green,
+    Yellow,
+    Orange,
+    Red,
+    Purple,
+    Gray,
 }
 
-pub fn co2_status_color(value: f32) -> gdk::RGBA {
+pub fn co2_status_color(value: f32) -> StatusColor {
     // CO2 thresholds: excellent/acceptable/moderate/high.
     match value {
-        x if x < 800.0 => rgba_u8(51, 209, 122),  // Green 3
-        x if x < 1200.0 => rgba_u8(245, 194, 17), // Yellow 4
-        x if x < 2000.0 => rgba_u8(255, 120, 0),  // Orange 3
-        _ => rgba_u8(237, 51, 59),                // Red 2
+        x if x < 800.0 => StatusColor::Green,
+        x if x < 1200.0 => StatusColor::Yellow,
+        x if x < 2000.0 => StatusColor::Orange,
+        _ => StatusColor::Red,
     }
 }
 
-pub fn pm25_status_color(value: f32) -> gdk::RGBA {
+pub fn pm25_status_color(value: f32) -> StatusColor {
     // PM2.5 thresholds use common AQI breakpoints.
     match value {
-        x if x < 12.0 => rgba_u8(51, 209, 122), // Green 3
-        x if x < 35.0 => rgba_u8(245, 194, 17), // Yellow 4
-        x if x < 55.0 => rgba_u8(255, 120, 0),  // Orange 3
-        _ => rgba_u8(237, 51, 59),              // Red 2
+        x if x < 12.0 => StatusColor::Green,
+        x if x < 35.0 => StatusColor::Yellow,
+        x if x < 55.0 => StatusColor::Orange,
+        _ => StatusColor::Red,
     }
 }
 
-pub fn tvoc_status_color(value: f32) -> gdk::RGBA {
+pub fn tvoc_status_color(value: f32) -> StatusColor {
     match value {
-        x if x < 65.0 => rgba_u8(51, 209, 122),
-        x if x < 220.0 => rgba_u8(245, 194, 17),
-        x if x < 660.0 => rgba_u8(255, 120, 0),
-        _ => rgba_u8(237, 51, 59),
+        x if x < 65.0 => StatusColor::Green,
+        x if x < 220.0 => StatusColor::Yellow,
+        x if x < 660.0 => StatusColor::Orange,
+        _ => StatusColor::Red,
     }
 }
 
-pub fn nox_status_color(value: f32) -> gdk::RGBA {
+pub fn nox_status_color(value: f32) -> StatusColor {
     match value {
-        x if x < 20.0 => rgba_u8(51, 209, 122),
-        x if x < 50.0 => rgba_u8(245, 194, 17),
-        x if x < 150.0 => rgba_u8(255, 120, 0),
-        _ => rgba_u8(237, 51, 59),
+        x if x < 20.0 => StatusColor::Green,
+        x if x < 50.0 => StatusColor::Yellow,
+        x if x < 150.0 => StatusColor::Orange,
+        _ => StatusColor::Red,
     }
 }
 
-pub fn aqi_status_color(value: f32) -> gdk::RGBA {
+pub fn aqi_status_color(value: f32) -> StatusColor {
     match value {
-        x if x <= 50.0 => rgba_u8(51, 209, 122),
-        x if x <= 100.0 => rgba_u8(245, 194, 17),
-        x if x <= 150.0 => rgba_u8(255, 120, 0),
-        x if x <= 200.0 => rgba_u8(237, 51, 59),
-        x if x <= 300.0 => rgba_u8(145, 65, 172),
-        _ => rgba_u8(94, 92, 100),
+        x if x <= 50.0 => StatusColor::Green,
+        x if x <= 100.0 => StatusColor::Yellow,
+        x if x <= 150.0 => StatusColor::Orange,
+        x if x <= 200.0 => StatusColor::Red,
+        x if x <= 300.0 => StatusColor::Purple,
+        _ => StatusColor::Gray,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{aqi_status_color, co2_status_color, pm25_status_color, StatusColor};
+
+    #[test]
+    fn co2_thresholds_classify_boundary_values() {
+        assert_eq!(co2_status_color(799.9), StatusColor::Green);
+        assert_eq!(co2_status_color(800.0), StatusColor::Yellow);
+        assert_eq!(co2_status_color(1200.0), StatusColor::Orange);
+        assert_eq!(co2_status_color(2000.0), StatusColor::Red);
+    }
+
+    #[test]
+    fn pm25_thresholds_classify_boundary_values() {
+        assert_eq!(pm25_status_color(11.9), StatusColor::Green);
+        assert_eq!(pm25_status_color(12.0), StatusColor::Yellow);
+        assert_eq!(pm25_status_color(35.0), StatusColor::Orange);
+        assert_eq!(pm25_status_color(55.0), StatusColor::Red);
+    }
+
+    #[test]
+    fn aqi_thresholds_cover_full_palette() {
+        assert_eq!(aqi_status_color(50.0), StatusColor::Green);
+        assert_eq!(aqi_status_color(100.0), StatusColor::Yellow);
+        assert_eq!(aqi_status_color(150.0), StatusColor::Orange);
+        assert_eq!(aqi_status_color(200.0), StatusColor::Red);
+        assert_eq!(aqi_status_color(300.0), StatusColor::Purple);
+        assert_eq!(aqi_status_color(301.0), StatusColor::Gray);
     }
 }
