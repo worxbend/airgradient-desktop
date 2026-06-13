@@ -133,21 +133,21 @@ https://github.com/oleksandr-balyshyn/airgradient-desktop/releases/latest/downlo
 Install a Flatpak bundle locally:
 
 ```bash
-flatpak install --user ./airgradient-desktop-0.1.0-linux-amd64.flatpak
+flatpak install --user ./airgradient-desktop-0.1.2-linux-amd64.flatpak
 flatpak run com.airgradient.desktop
 ```
 
 Run an AppImage:
 
 ```bash
-chmod +x airgradient-desktop-0.1.0-linux-amd64.AppImage
-./airgradient-desktop-0.1.0-linux-amd64.AppImage
+chmod +x airgradient-desktop-0.1.2-linux-amd64.AppImage
+./airgradient-desktop-0.1.2-linux-amd64.AppImage
 ```
 
 Install a downloaded Snap package locally:
 
 ```bash
-sudo snap install --dangerous ./airgradient-desktop-0.1.0-linux-amd64.snap
+sudo snap install --dangerous ./airgradient-desktop-0.1.2-linux-amd64.snap
 airgradient-desktop
 ```
 
