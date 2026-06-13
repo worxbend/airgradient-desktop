@@ -49,8 +49,6 @@ parts:
   airgradient-desktop:
     plugin: rust
     source: .
-    rust-cargo-parameters:
-      - --locked
     build-packages:
       - libadwaita-1-dev
       - libglib2.0-bin
