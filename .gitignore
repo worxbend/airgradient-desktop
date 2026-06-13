@@ -3,8 +3,14 @@
 /.cargo
 /.flatpak-builder
 /vendor
+/*.snap
 /*.flatpak
 /*.AppImage
+/parts
+/prime
+/stage
+/.snapcraft
+/snap/.snapcraft
 /airgradient-desktop-*-linux-amd64
 /airgradient-desktop-*-linux-arm64
 /airgradient-desktop.AppDir
