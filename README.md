@@ -92,7 +92,7 @@ sudo apt install flatpak flatpak-builder appstream desktop-file-utils patchelf f
 ```
 
 Snap packages are built in GitHub Actions with Snapcraft and the GNOME Snapcraft extension.
-If the repository secret `SNAPCRAFT_STORE_CREDENTIALS` is set, tagged releases also publish the Snap to the Snap Store `stable` channel. Without that secret, the Snap is still uploaded to GitHub Releases.
+Tagged releases upload the Snap to GitHub Releases by default. To also publish to the Snap Store `stable` channel, set the repository variable `PUBLISH_SNAP_STORE` to `true` and provide package-scoped `SNAPCRAFT_STORE_CREDENTIALS`.
 
 ## Run Locally
 
